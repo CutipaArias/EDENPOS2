@@ -96,7 +96,7 @@ namespace EdenPOS
             grid.DefaultCellStyle.WrapMode = DataGridViewTriState.False;
             grid.AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.None;
             grid.CellPainting += PaintActionPill;
-            var block = ReportUi.Block("Acciones registradas", "Eliminaciones, reembolsos, cambios de precio y diferencias de caja. Solo lectura.", grid, empty);
+            var block = ReportUi.Block("Acciones registradas", "Eliminaciones, reembolsos, cambios de precio, diferencias de caja, bloqueos de cuenta y cierres de sesión por inactividad. Solo lectura.", grid, empty);
             var blockHeader = block.Controls.OfType<FlowLayoutPanel>().FirstOrDefault();
             if (blockHeader != null) blockHeader.Controls.Add(countLabel);
             root.Controls.Add(block, 0, 3);
@@ -118,9 +118,11 @@ namespace EdenPOS
                 case AuditActions.CajaDiferencia:
                 case AuditActions.UsuarioDesactivado:
                 case AuditActions.PrecioCambiado:
+                case AuditActions.CuentaBloqueada:
                     return Tone.Warning;
                 case AuditActions.CopiaRestaurada:
                 case AuditActions.DatosImportados:
+                case AuditActions.CuentaDesbloqueada:
                     return Tone.Info;
                 default:
                     return Tone.Neutral;
@@ -218,6 +220,9 @@ namespace EdenPOS
                 case AuditActions.CopiaRestaurada: return "Copia restaurada";
                 case AuditActions.DatosImportados: return "Datos importados";
                 case AuditActions.ComprobanteRechazado: return "Comprobante rechazado (simulado)";
+                case AuditActions.CuentaBloqueada: return "Cuenta bloqueada";
+                case AuditActions.CuentaDesbloqueada: return "Cuenta desbloqueada";
+                case AuditActions.SesionInactividad: return "Sesión cerrada por inactividad";
                 default: return action;
             }
         }

@@ -68,8 +68,53 @@ namespace EdenPOS
             Directory.CreateDirectory(DataDirectory);
             // settings.json ya no se crea: solo guarda datos locales (cadena de conexión) y es opcional.
             // Los recibos viven en MySQL (recibo / recibo_linea); ya no se crea receipts.json.
+            EnsureUserLockColumns();
             SeedProductsIfEmpty();
             MigrateDefaults();
+        }
+
+        // RF-01: migración automática e idempotente de la tabla usuario (bloqueo por intentos fallidos). Consulta information_schema y solo
+        // agrega lo que falta con ALTER TABLE ... ADD COLUMN (sin IF NOT EXISTS: MySQL 8.4 no lo admite; MariaDB 10.4 y MySQL 8.4 sí admiten esto).
+        // Lo mismo, a mano, está en devdb/migraciones/001_rf01_bloqueo_usuario.sql.
+        // bloqueado_en = momento del bloqueo (NULL = sin bloqueo). El vencimiento de la dueña se calcula en la app (UserSecurity.OwnerLockDuration).
+        private static void EnsureUserLockColumns()
+        {
+            lock (Sync)
+            using (var connection = SqlConnectionFactory.Open())
+            {
+                var existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                using (var command = new MySqlCommand(
+                    "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'usuario'", connection))
+                using (var reader = command.ExecuteReader())
+                    while (reader.Read())
+                    {
+                        var raw = reader.GetValue(0);
+                        existing.Add(raw is byte[] ? Encoding.UTF8.GetString((byte[])raw) : Convert.ToString(raw, CultureInfo.InvariantCulture));
+                    }
+                AddColumnIfMissing(connection, existing, "intentos_fallidos", "INT NOT NULL DEFAULT 0");
+                AddColumnIfMissing(connection, existing, "bloqueado_en", "DATETIME NULL");
+            }
+        }
+
+        private static void AddColumnIfMissing(MySqlConnection connection, HashSet<string> existing, string column, string definition)
+        {
+            if (existing.Contains(column)) return;
+            try
+            {
+                RunSql(connection, "ALTER TABLE usuario ADD COLUMN " + column + " " + definition);
+            }
+            catch (MySqlException ex) when ((int)ex.ErrorCode == 1060)
+            {
+                // Otra caja que arrancó a la vez ya la agregó (Duplicate column name): es el resultado buscado.
+            }
+            catch (MySqlException ex) when (ex.ErrorCode == MySqlErrorCode.TableAccessDenied || ex.ErrorCode == MySqlErrorCode.ColumnAccessDenied ||
+                                            ex.ErrorCode == MySqlErrorCode.DatabaseAccessDenied || (int)ex.ErrorCode == 1227)   // 1142, 1143, 1044, 1227
+            {
+                // El usuario de la base no tiene permiso ALTER: mensaje claro (Program lo muestra tal cual) en vez del error genérico.
+                LogError(ex, "Migración RF-01: agregar la columna usuario." + column);
+                throw new InvalidOperationException(
+                    "Falta actualizar la base de datos: ejecute devdb\\migraciones\\001_rf01_bloqueo_usuario.sql con un usuario que tenga permiso ALTER.", ex);
+            }
         }
 
         public static AppSettings Settings
@@ -281,10 +326,121 @@ namespace EdenPOS
             }
         }
 
-        public static AppUser AuthenticateUser(string userId, string pin)
+        public enum LoginOutcome { Success, WrongPin, Locked, JustLocked }
+
+        public sealed class LoginResult
         {
-            var user = Users.FirstOrDefault(x => x.Id == userId && x.Active);
-            return UserSecurity.VerifyPin(user, pin) ? user : null;
+            public LoginOutcome Outcome { get; set; }
+            public AppUser User { get; set; }      // con Success: el usuario autenticado; en los demás casos: su estado actual (para el mensaje), o null si no existe
+            public int AttemptsLeft { get; set; }  // con WrongPin: intentos que quedan antes del bloqueo
+        }
+
+        // RF-01: comprueba el PIN y lleva el contador de intentos EN LA BASE (misma fila para todas las cajas). Todo en una transacción con la
+        // fila del usuario bloqueada (FOR UPDATE), así dos cajas no se pisan el contador. Con la cuenta bloqueada NO se comprueba el PIN.
+        // PIN correcto = contador a 0. PIN incorrecto = +1; al llegar a MaxFailedAttempts queda bloqueada y se audita.
+        public static LoginResult TryLogin(string userId, string pin)
+        {
+            int id;
+            if (!int.TryParse(userId, NumberStyles.Integer, CultureInfo.InvariantCulture, out id)) return new LoginResult { Outcome = LoginOutcome.WrongPin };
+            lock (Sync)
+            using (var connection = SqlConnectionFactory.Open())
+            using (var transaction = connection.BeginTransaction())
+            {
+                var user = LoadUsersFromDb(connection, transaction, id, true).FirstOrDefault();
+                if (user == null || !user.Active)
+                {
+                    transaction.Rollback();
+                    return new LoginResult { Outcome = LoginOutcome.WrongPin };
+                }
+                if (UserSecurity.IsLocked(user))
+                {
+                    transaction.Rollback();
+                    return new LoginResult { Outcome = LoginOutcome.Locked, User = user };
+                }
+                if (user.LockedSeconds.HasValue)
+                {
+                    // Bloqueo de dueña ya vencido: se limpia antes de comprobar el PIN.
+                    SetUserLockState(connection, transaction, id, 0, false);
+                    user.FailedAttempts = 0;
+                    user.LockedSeconds = null;
+                }
+
+                if (UserSecurity.VerifyPin(user, pin))
+                {
+                    if (user.FailedAttempts > 0) SetUserLockState(connection, transaction, id, 0, false);
+                    transaction.Commit();
+                    return new LoginResult { Outcome = LoginOutcome.Success, User = user };
+                }
+
+                var attempts = user.FailedAttempts + 1;
+                var locks = attempts >= UserSecurity.MaxFailedAttempts;
+                SetUserLockState(connection, transaction, id, attempts, locks);
+                user.FailedAttempts = attempts;
+                if (locks)
+                {
+                    user.LockedSeconds = 0;
+                    RegistrarAuditoria(connection, transaction, AuditActions.CuentaBloqueada,
+                        "Cuenta de " + user.Name + " (" + UserRoles.DisplayName(user.Role) + ") bloqueada tras " + attempts + " intentos fallidos", false, id);
+                }
+                transaction.Commit();
+                return new LoginResult
+                {
+                    Outcome = locks ? LoginOutcome.JustLocked : LoginOutcome.WrongPin,
+                    User = user,
+                    AttemptsLeft = Math.Max(0, UserSecurity.MaxFailedAttempts - attempts)
+                };
+            }
+        }
+
+        // Fija el contador y el bloqueo (bloqueado_en = hora del servidor, o NULL). Sin tocar updated_at: no es un cambio de datos del usuario.
+        private static void SetUserLockState(MySqlConnection connection, MySqlTransaction transaction, int id, int attempts, bool locked)
+        {
+            Execute(connection, transaction,
+                "UPDATE usuario SET intentos_fallidos = @intentos, bloqueado_en = " + (locked ? "NOW()" : "NULL") + " WHERE id_usuario = @id",
+                new Dictionary<string, object> { { "@id", id }, { "@intentos", attempts } });
+        }
+
+        // Desbloqueo por la dueña (Configuración > Usuarios): contador a 0 y sin bloqueo. Se audita quién lo hizo.
+        public static void UnlockUser(string id)
+        {
+            lock (Sync)
+            {
+                bool changed;
+                using (var connection = SqlConnectionFactory.Open())
+                using (var transaction = connection.BeginTransaction())
+                {
+                    int userId;
+                    if (!int.TryParse(id, NumberStyles.Integer, CultureInfo.InvariantCulture, out userId))
+                        throw new InvalidOperationException("El usuario ya no existe.");
+                    var user = LoadUsersFromDb(connection, transaction, userId, true).FirstOrDefault();
+                    if (user == null) throw new InvalidOperationException("El usuario ya no existe.");
+                    var wasLocked = UserSecurity.IsLocked(user);   // se audita solo un bloqueo vigente (no el de una dueña ya vencido)
+                    changed = user.LockedSeconds.HasValue || user.FailedAttempts > 0;
+                    if (changed) SetUserLockState(connection, transaction, userId, 0, false);
+                    if (wasLocked)
+                        RegistrarAuditoria(connection, transaction, AuditActions.CuentaDesbloqueada,
+                            "Cuenta de " + user.Name + " (" + UserRoles.DisplayName(user.Role) + ") desbloqueada por " +
+                            (AppSession.CurrentUser == null ? "el sistema" : AppSession.CurrentUser.Name));
+                    transaction.Commit();
+                }
+                if (changed) RaiseChanged();
+            }
+        }
+
+        // Cierre de sesión por inactividad (RF-01 / RNF-03): queda en la auditoría a nombre del usuario de la sesión.
+        // Recibe el id explícito porque se llama en segundo plano, cuando AppSession ya puede estar cerrada.
+        public static void LogIdleLogout(string userId, string userName, int minutes)
+        {
+            int id;
+            int? actor = int.TryParse(userId, NumberStyles.Integer, CultureInfo.InvariantCulture, out id) ? id : (int?)null;
+            lock (Sync)
+            using (var connection = SqlConnectionFactory.Open())
+            using (var transaction = connection.BeginTransaction())
+            {
+                RegistrarAuditoria(connection, transaction, AuditActions.SesionInactividad,
+                    "Sesión de " + userName + " cerrada tras " + minutes + " minutos sin actividad", false, actor);
+                transaction.Commit();
+            }
         }
 
         public static AppUser SaveUser(string id, string name, string pin, string role)
@@ -318,14 +474,16 @@ namespace EdenPOS
                         if (user.Role == UserRoles.Owner && role != UserRoles.Owner &&
                             users.Count(x => x.Active && x.Role == UserRoles.Owner) <= 1)
                             throw new InvalidOperationException("Debe existir al menos una dueña activa.");
-                        if (!string.IsNullOrWhiteSpace(pin)) UserSecurity.SetPin(user, pin);
+                        var pinChanged = !string.IsNullOrWhiteSpace(pin);
+                        if (pinChanged) UserSecurity.SetPin(user, pin);
                         else if (string.IsNullOrWhiteSpace(user.PinHash))
                             throw new ArgumentException("Ingrese un PIN de 4 a 8 dígitos.");
                         user.Name = normalizedName;
                         user.Role = role;
                         user.UpdatedAt = DateTime.Now;
                         Execute(connection, transaction,
-                            "UPDATE usuario SET id_rol = @rol, nombre = @nombre, pin_hash = @hash, pin_salt = @salt, updated_at = @actualizado WHERE id_usuario = @id",
+                            "UPDATE usuario SET id_rol = @rol, nombre = @nombre, pin_hash = @hash, pin_salt = @salt, updated_at = @actualizado" +
+                            (pinChanged ? ", intentos_fallidos = 0, bloqueado_en = NULL" : "") + " WHERE id_usuario = @id",
                             new Dictionary<string, object>
                             {
                                 { "@id", int.Parse(user.Id, CultureInfo.InvariantCulture) },
@@ -335,6 +493,11 @@ namespace EdenPOS
                                 { "@salt", user.PinSalt },
                                 { "@actualizado", user.UpdatedAt }
                             });
+                        // Cambiar el PIN también desbloquea la cuenta (y deja el contador en 0).
+                        if (pinChanged && UserSecurity.IsLocked(user))
+                            RegistrarAuditoria(connection, transaction, AuditActions.CuentaDesbloqueada,
+                                "Cuenta de " + user.Name + " (" + UserRoles.DisplayName(role) + ") desbloqueada al cambiar su PIN, por " +
+                                (AppSession.CurrentUser == null ? "el sistema" : AppSession.CurrentUser.Name));
                     }
                     transaction.Commit();
                 }
@@ -408,12 +571,21 @@ namespace EdenPOS
 
         private static List<AppUser> LoadUsersFromDb(MySqlConnection connection, MySqlTransaction transaction)
         {
+            return LoadUsersFromDb(connection, transaction, 0, false);
+        }
+
+        // onlyId > 0: solo ese usuario. lockRow: lo bloquea (FOR UPDATE) hasta el fin de la transacción; el rol va en subconsulta para no bloquear la tabla rol.
+        private static List<AppUser> LoadUsersFromDb(MySqlConnection connection, MySqlTransaction transaction, int onlyId, bool lockRow)
+        {
             var users = new List<AppUser>();
             using (var command = new MySqlCommand(
-                "SELECT u.id_usuario, u.nombre, r.nombre, u.pin_salt, u.pin_hash, u.activo, u.created_at, u.updated_at " +
-                "FROM usuario u INNER JOIN rol r ON r.id_rol = u.id_rol ORDER BY u.id_usuario", connection, transaction))
-            using (var reader = command.ExecuteReader())
+                "SELECT u.id_usuario, u.nombre, (SELECT r.nombre FROM rol r WHERE r.id_rol = u.id_rol), u.pin_salt, u.pin_hash, u.activo, u.created_at, u.updated_at, " +
+                "u.intentos_fallidos, CASE WHEN u.bloqueado_en IS NULL THEN NULL ELSE TIMESTAMPDIFF(SECOND, u.bloqueado_en, NOW()) END " +
+                "FROM usuario u" + (onlyId > 0 ? " WHERE u.id_usuario = @id" : "") + " ORDER BY u.id_usuario" + (lockRow ? " FOR UPDATE" : ""), connection, transaction))
             {
+                if (onlyId > 0) command.Parameters.AddWithValue("@id", onlyId);
+                using (var reader = command.ExecuteReader())
+                {
                 while (reader.Read())
                 {
                     users.Add(new AppUser
@@ -425,8 +597,11 @@ namespace EdenPOS
                         PinHash = reader.GetString(4),
                         Active = reader.GetBoolean(5),
                         CreatedAt = reader.GetDateTime(6),
-                        UpdatedAt = reader.GetDateTime(7)
+                        UpdatedAt = reader.GetDateTime(7),
+                        FailedAttempts = reader.GetInt32(8),
+                        LockedSeconds = reader.IsDBNull(9) ? (double?)null : Convert.ToDouble(reader.GetValue(9), CultureInfo.InvariantCulture)
                     });
+                }
                 }
             }
             return users;
@@ -1340,13 +1515,15 @@ namespace EdenPOS
         // hace rollback, la auditoría desaparece con ella. id_usuario solo se guarda si el usuario existe en este momento
         // (tras restaurar una copia o importar datos antiguos la tabla usuario puede haber cambiado).
         // delSistema = true: acción automática (hilo de fondo): id_usuario NULL y el detalle empieza con "Sistema: ".
-        private static void RegistrarAuditoria(MySqlConnection connection, MySqlTransaction transaction, string accion, string detalle, bool delSistema = false)
+        // usuarioId: actor explícito cuando aún no hay sesión (p. ej. el bloqueo de una cuenta durante el inicio de sesión).
+        private static void RegistrarAuditoria(MySqlConnection connection, MySqlTransaction transaction, string accion, string detalle, bool delSistema = false, int? usuarioId = null)
         {
             object userId = DBNull.Value;
             int parsed;
             var current = delSistema ? null : AppSession.CurrentUser;
             if (delSistema) detalle = "Sistema: " + detalle;
-            if (current != null && int.TryParse(current.Id, NumberStyles.Integer, CultureInfo.InvariantCulture, out parsed)) userId = parsed;
+            if (usuarioId.HasValue) userId = usuarioId.Value;
+            else if (current != null && int.TryParse(current.Id, NumberStyles.Integer, CultureInfo.InvariantCulture, out parsed)) userId = parsed;
             using (var command = new MySqlCommand(
                 "INSERT INTO auditoria (id_usuario, accion, detalle, created_at) " +
                 "VALUES ((SELECT id_usuario FROM usuario WHERE id_usuario = @usuario), @accion, @detalle, @fecha)", connection, transaction))
@@ -2300,6 +2477,8 @@ namespace EdenPOS
                     for (var index = 0; index < reader.FieldCount; index++)
                     {
                         var name = reader.GetName(index);
+                        // El bloqueo de cuentas (RF-01) es local: no va en la copia (así se puede importar en versiones anteriores y no se reimponen bloqueos viejos).
+                        if (table == "usuario" && (name == "intentos_fallidos" || name == "bloqueado_en")) continue;
                         var value = reader.GetValue(index);
                         if (table == "configuracion" && name == "dni_api_token_protected") value = "";
                         else if (table == "configuracion" && name == "dni_lookup_enabled") value = false;

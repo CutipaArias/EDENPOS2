@@ -21,6 +21,15 @@ namespace EdenPOS
         private DataRevisionPoller revisionPoller;   // sondeo en segundo plano de cambios hechos por otras cajas
         private bool remoteRefreshQueued;
 
+        // RNF-03: sin teclado ni ratón durante este tiempo se cierra la sesión. Cambie solo este valor para ajustarlo.
+        public static readonly TimeSpan IdleTimeout = TimeSpan.FromMinutes(15);
+        private const int IdleCheckIntervalMs = 5000;
+        private readonly Timer idleTimer;
+        private ActivityFilter activityFilter;
+        private int idleCloseAttempts;   // comprobaciones seguidas que han intentado cerrar ventanas abiertas sin conseguirlo
+        private const int IdleMaxCloseAttempts = 3;   // pasado este tope se cierra la sesión aunque quede alguna ventana
+        private DateTime lastActivityUtc = DateTime.UtcNow;   // reloj de pared: tras suspender el equipo también cuenta
+
         // Cierra la ventana principal y vuelve al inicio de sesión (p. ej. si una restauración eliminó al usuario de la sesión).
         public void ForceLogout()
         {
@@ -125,6 +134,7 @@ namespace EdenPOS
             logout.Click += (s, e) =>
             {
                 if (MessageBox.Show("¿Cerrar la sesión de " + AppSession.UserName + "?", "Cerrar sesión", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+                SalesView.DiscardIdleDraft();
                 LogoutRequested = true;
                 Close();
             };
@@ -181,8 +191,18 @@ namespace EdenPOS
 
             AppData.DataChanged += OnDataChanged;
             revisionPoller = new DataRevisionPoller(OnRemoteRevisionChanged, 5000);
+            // Detección de actividad en toda la aplicación (también dentro de diálogos) y comprobación periódica.
+            activityFilter = new ActivityFilter(() => lastActivityUtc = DateTime.UtcNow);
+            Application.AddMessageFilter(activityFilter);
+            idleTimer = new Timer { Interval = IdleCheckIntervalMs };
+            idleTimer.Tick += (s, e) => CheckIdle();
+            idleTimer.Start();
             FormClosed += (s, e) =>
             {
+                idleTimer.Stop();
+                idleTimer.Dispose();
+                if (activityFilter != null) Application.RemoveMessageFilter(activityFilter);
+                activityFilter = null;
                 AppData.DataChanged -= OnDataChanged;
                 var poller = revisionPoller;
                 revisionPoller = null;
@@ -195,6 +215,115 @@ namespace EdenPOS
             UpdateIdentity();
             updateResponsiveLayout();
             Navigate(AppSession.IsOwner ? "inventory" : "sales");
+        }
+
+        // ---- Cierre de sesión por inactividad (RNF-03) ----
+
+        // Se llama cada IdleCheckIntervalMs (y desde las pruebas con una hora simulada). Reglas:
+        //  - Cobrar (CheckoutDialog) o recordatorio de alquiler abiertos: se espera a que se cierren, con un tope de 2 x IdleTimeout sin actividad.
+        //    Pasado el tope se tratan como cualquier otro diálogo (Cancelar no cobra nada y el carrito se conserva).
+        //  - Cualquier otro diálogo (incluida la venta completada: la venta ya está guardada) o aviso se cierra como "Cancelar" y la sesión se
+        //    cierra en la siguiente comprobación. Si tras IdleMaxCloseAttempts intentos aún queda alguna ventana que no se deja cerrar, se cierra igualmente.
+        //  - Sin diálogos: se registra en auditoría (en segundo plano), se conserva el carrito en memoria y se vuelve al inicio de sesión.
+        internal void CheckIdle(DateTime? nowUtc = null)
+        {
+            if (LogoutRequested || IsDisposed || !IsHandleCreated) return;
+            var idle = (nowUtc ?? DateTime.UtcNow) - lastActivityUtc;
+            if (idle < IdleTimeout) { idleCloseAttempts = 0; return; }
+            if (AppSession.CurrentUser == null) return;
+
+            if (idle < IdleTimeout + IdleTimeout)
+                foreach (Form form in Application.OpenForms.Cast<Form>().ToList())
+                    if (form != this && form.Visible && form.Modal && (form is CheckoutDialog || form is RentalReminderDialog)) return;   // cobro en curso: se espera
+
+            var closedSomething = false;
+            foreach (Form form in Application.OpenForms.Cast<Form>().ToList())
+            {
+                if (form == this || !form.Visible || !form.Modal) continue;
+                form.DialogResult = DialogResult.Cancel;
+                closedSomething = true;
+            }
+            if (CloseNativeDialogs(idleCloseAttempts > 0)) closedSomething = true;
+            if (closedSomething && idleCloseAttempts < IdleMaxCloseAttempts)
+            {
+                idleCloseAttempts++;
+                return;   // la sesión se cierra en la siguiente comprobación, cuando los diálogos ya terminaron
+            }
+            // Sin diálogos, o alguno se niega a cerrarse tras varios intentos (p. ej. un diálogo de archivos): se cierra la sesión igualmente.
+
+            var user = AppSession.CurrentUser;
+            var minutes = (int)Math.Round(IdleTimeout.TotalMinutes);
+            var userId = user.Id;
+            var userName = user.Name;
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try { AppData.LogIdleLogout(userId, userName, minutes); }
+                catch (Exception ex) { AppData.LogError(ex, "Auditoría de cierre de sesión por inactividad"); }
+            });
+            Control salesView;
+            var sales = views.TryGetValue("sales", out salesView) ? salesView as SalesView : null;
+            if (sales != null) sales.StashIdleDraft();
+            AppSession.LogoutNotice = "Sesión cerrada por inactividad. Ingrese de nuevo.";
+            ForceLogout();
+        }
+
+        private delegate bool EnumThreadWindowsProc(IntPtr hwnd, IntPtr lParam);
+        [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool EnumThreadWindows(uint threadId, EnumThreadWindowsProc callback, IntPtr lParam);
+        [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] private static extern int GetClassName(IntPtr hwnd, System.Text.StringBuilder name, int max);
+        [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
+        [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool EndDialog(IntPtr hwnd, IntPtr result);
+        [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
+        private const uint WM_CLOSE = 0x0010, WM_COMMAND = 0x0111;
+        [System.Runtime.InteropServices.DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+
+        // MessageBox.Show (confirmaciones y avisos) y los diálogos de archivos no son Form de WinForms: son ventanas nativas (#32770) de este mismo hilo.
+        // Primero se les pide cerrar con WM_COMMAND/IDCANCEL (2) y WM_CLOSE; en los intentos siguientes también EndDialog (los MessageBox Sí/No
+        // ignoran WM_CLOSE; IDCANCEL equivale a no confirmar). Los diálogos de archivos pueden no obedecer: por eso CheckIdle tiene un tope de intentos.
+        private static bool CloseNativeDialogs(bool forceEnd)
+        {
+            var found = false;
+            EnumThreadWindows(GetCurrentThreadId(), (hwnd, lParam) =>
+            {
+                var name = new System.Text.StringBuilder(32);
+                GetClassName(hwnd, name, name.Capacity);
+                if (name.ToString() != "#32770" || !IsWindowVisible(hwnd)) return true;
+                found = true;
+                PostMessage(hwnd, WM_COMMAND, (IntPtr)2, IntPtr.Zero);
+                PostMessage(hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+                if (forceEnd) EndDialog(hwnd, (IntPtr)2);
+                return true;
+            }, IntPtr.Zero);
+            return found;
+        }
+
+        // Marca actividad con teclas, clics, rueda y movimiento real del ratón (WM_MOUSEMOVE se repite sin que se mueva el ratón al repintar,
+        // por eso se compara la posición del cursor).
+        // Limitación aceptada: dentro de los bucles de mensajes nativos (MessageBox y diálogos de archivos) el filtro no recibe los mensajes,
+        // así que la actividad en esos diálogos no reinicia el contador de inactividad.
+        private sealed class ActivityFilter : IMessageFilter
+        {
+            private readonly Action onActivity;
+            private Point lastCursor = Cursor.Position;
+
+            public ActivityFilter(Action onActivity) { this.onActivity = onActivity; }
+
+            public bool PreFilterMessage(ref Message m)
+            {
+                switch (m.Msg)
+                {
+                    case 0x0100: case 0x0101: case 0x0104: case 0x0105:   // WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP
+                    case 0x0201: case 0x0203: case 0x0204: case 0x0207:   // WM_LBUTTONDOWN, WM_LBUTTONDBLCLK, WM_RBUTTONDOWN, WM_MBUTTONDOWN
+                    case 0x020A:                                          // WM_MOUSEWHEEL
+                    case 0x00A1:                                          // WM_NCLBUTTONDOWN (barra de título, bordes)
+                        onActivity();
+                        break;
+                    case 0x0200:                                          // WM_MOUSEMOVE
+                        var position = Cursor.Position;
+                        if (position != lastCursor) { lastCursor = position; onActivity(); }
+                        break;
+                }
+                return false;
+            }
         }
 
         private static readonly Color SidebarWhite = Color.White;   // blanco sobre SidebarBack

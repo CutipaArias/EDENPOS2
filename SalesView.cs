@@ -330,7 +330,50 @@ namespace EdenPOS
             footer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             ticketLayout.Controls.Add(footer, 0, 2);
 
+            RestoreIdleDraft();
             RefreshView();
+        }
+
+        // Carrito en curso conservado en memoria cuando la sesión se cierra por inactividad (RNF-03). Se devuelve solo al MISMO usuario
+        // en su siguiente ingreso; al cerrar la sesión a mano el carrito se descarta, como siempre.
+        private sealed class IdleDraft
+        {
+            public string UserId, Customer, Dni, SavedTicketId;
+            public List<ReceiptLine> Lines;
+            public List<int> Lockers;
+        }
+
+        private static IdleDraft idleDraft;
+
+        // Cierre de sesión manual: no se arrastra un borrador de una caída anterior.
+        public static void DiscardIdleDraft() { idleDraft = null; }
+
+        public void StashIdleDraft()
+        {
+            var user = AppSession.CurrentUser;
+            if (user == null || cart.Count == 0) { idleDraft = null; return; }
+            idleDraft = new IdleDraft
+            {
+                UserId = user.Id,
+                Customer = customerBox.Text,
+                Dni = dniBox.Text,
+                SavedTicketId = loadedSavedTicketId,
+                Lockers = loadedLockerNumbers.ToList(),
+                Lines = cart.Select(x => new ReceiptLine { ProductId = x.ProductId, OptionId = x.OptionId, Name = x.Name, Comment = x.Comment, UnitPrice = x.UnitPrice, Quantity = x.Quantity }).ToList()
+            };
+        }
+
+        private void RestoreIdleDraft()
+        {
+            var draft = idleDraft;
+            idleDraft = null;   // se usa una sola vez; si entra otra persona, se descarta
+            if (draft == null || AppSession.CurrentUser == null || AppSession.CurrentUser.Id != draft.UserId) return;
+            cart.AddRange(draft.Lines);
+            customerBox.Text = draft.Customer;
+            lastAutoLookup = Validation.IsValidDni(draft.Dni) ? draft.Dni : null;   // el DNI restaurado no dispara la consulta automática
+            dniBox.Text = draft.Dni;
+            loadedSavedTicketId = draft.SavedTicketId;
+            loadedLockerNumbers = draft.Lockers;
         }
 
         public void RefreshView()

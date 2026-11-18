@@ -15,6 +15,8 @@ CREATE TABLE usuario (
   activo TINYINT(1) NOT NULL DEFAULT 1,
   created_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL,
+  intentos_fallidos INT NOT NULL DEFAULT 0,
+  bloqueado_en DATETIME NULL,
   FOREIGN KEY (id_rol) REFERENCES rol(id_rol)
 );
 

@@ -1201,7 +1201,10 @@ namespace EdenPOS
                     if (!columns.TryGetValue(name, out cols)) throw new InvalidOperationException("Falta la tabla " + name + " en la base de datos.");
                     if (!keys.TryGetValue(name, out pk) || pk.Count == 0) throw new InvalidOperationException("La tabla " + name + " no tiene clave primaria.");
                     // El token de DNI (cifrado para esta PC) no se replica, igual que las copias de seguridad.
-                    var kept = cols.Where(c => !(name == "configuracion" && c.Key == "dni_api_token_protected")).ToList();
+                    // El estado de bloqueo de las cuentas (RF-01) es local de cada instalación y tampoco se replica: así la réplica funciona igual aunque
+                    // el esquema de Supabase aún no tenga esas columnas.
+                    var kept = cols.Where(c => !(name == "configuracion" && c.Key == "dni_api_token_protected") &&
+                                               !(name == "usuario" && (c.Key == "intentos_fallidos" || c.Key == "bloqueado_en"))).ToList();
                     var names = kept.Select(c => c.Key).ToArray();
                     var info = new ReplicaTableInfo
                     {

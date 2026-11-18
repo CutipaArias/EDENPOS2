@@ -33,6 +33,9 @@ namespace EdenPOS
         public const string CopiaRestaurada = "COPIA_RESTAURADA";
         public const string DatosImportados = "DATOS_IMPORTADOS";
         public const string ComprobanteRechazado = "COMPROBANTE_RECHAZADO";
+        public const string CuentaBloqueada = "CUENTA_BLOQUEADA";
+        public const string CuentaDesbloqueada = "CUENTA_DESBLOQUEADA";
+        public const string SesionInactividad = "SESION_INACTIVIDAD";
     }
 
     public sealed class AuditEntry
@@ -166,6 +169,10 @@ namespace EdenPOS
         public bool Active { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
+        // RF-01: contador de PIN incorrectos y bloqueo (persisten en la base). LockedSeconds = segundos desde el bloqueo según el reloj del servidor
+        // (null = sin bloqueo); así varias cajas con relojes distintos coinciden. El bloqueo efectivo lo decide UserSecurity.IsLocked.
+        public int FailedAttempts { get; set; }
+        public double? LockedSeconds { get; set; }
     }
 
     public sealed class AppSettings

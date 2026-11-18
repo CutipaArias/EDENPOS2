@@ -14,8 +14,6 @@ namespace EdenPOS
         private readonly TextBox pinBox;
         private readonly Banner status;
         private readonly Button loginButton;
-        private readonly Timer unlockTimer;
-        private int failedAttempts;
 
         public LoginForm()
         {
@@ -84,7 +82,7 @@ namespace EdenPOS
             combo.DisplayMember = "Name";
             combo.DropDownHeight = 180;
             combo.Font = Theme.Subhead;
-            combo.SelectedIndexChanged += (s, e) => ClearPin();
+            combo.SelectedIndexChanged += (s, e) => { ClearPin(); ShowLockedStatus(); };
             userBox = combo;
             card.Controls.Add(userBox);
 
@@ -149,25 +147,19 @@ namespace EdenPOS
             card.Controls.Add(loginButton);
             AcceptButton = loginButton;
 
-            unlockTimer = new Timer { Interval = 10000 };
-            unlockTimer.Tick += (s, e) =>
-            {
-                unlockTimer.Stop();
-                failedAttempts = 0;
-                SetLoginEnabled(true);
-                SetStatus("");
-            };
-
             keypadPanel = keypad;
             ApplyMonitorScale();
             CaptureStatusLayout(card);
             LoadUsers();
+            if (!string.IsNullOrEmpty(AppSession.LogoutNotice))
+            {
+                SetStatus(AppSession.LogoutNotice, Tone.Info);
+                AppSession.LogoutNotice = null;
+            }
             KeyPress += LoginForm_KeyPress;
             KeyDown += LoginForm_KeyDown;
             FormClosed += (s, e) =>
             {
-                unlockTimer.Stop();
-                unlockTimer.Dispose();
                 if (logo.Image != null) logo.Image.Dispose();
             };
         }
@@ -225,7 +217,11 @@ namespace EdenPOS
                          .OrderBy(x => x.Role == UserRoles.Owner ? 0 : 1)
                          .ThenBy(x => x.Name))
                 userBox.Items.Add(user);
-            if (userBox.Items.Count > 0) userBox.SelectedIndex = 0;
+            if (userBox.Items.Count > 0)
+            {
+                userBox.SelectedIndex = 0;
+                ShowLockedStatus();   // si el primer usuario ya está bloqueado (SelectedIndexChanged no se dispara cuando el índice no cambia)
+            }
             else
             {
                 SetStatus("No existen usuarios activos.", Tone.Warning);
@@ -300,10 +296,11 @@ namespace EdenPOS
                 return;
             }
 
-            AppUser authenticated;
+            AppData.LoginResult result;
             try
             {
-                authenticated = AppData.AuthenticateUser(selected.Id, pinBox.Text);
+                // RF-01: el contador de intentos y el bloqueo viven en la base (valen para todas las cajas); con la cuenta bloqueada no se comprueba el PIN.
+                result = AppData.TryLogin(selected.Id, pinBox.Text);
             }
             catch (MySqlConnector.MySqlException ex)
             {
@@ -312,23 +309,31 @@ namespace EdenPOS
                 SetStatus(AppData.DescribeDatabaseError(ex));
                 return;
             }
-            if (authenticated == null)
+            if (result.Outcome != AppData.LoginOutcome.Success)
             {
-                failedAttempts++;
                 ClearPin();
-                if (failedAttempts >= 5) SetStatus("Demasiados intentos. Espere 10 segundos.", Tone.Warning);
-                else SetStatus("PIN incorrecto. Inténtelo de nuevo.");
-                if (failedAttempts >= 5)
+                if (result.Outcome == AppData.LoginOutcome.Locked || result.Outcome == AppData.LoginOutcome.JustLocked)
                 {
-                    SetLoginEnabled(false);
-                    unlockTimer.Start();
+                    selected.FailedAttempts = result.User.FailedAttempts;
+                    selected.LockedSeconds = result.User.LockedSeconds;
+                    SetStatus(UserSecurity.LockedMessage(result.User), Tone.Warning);
                 }
+                else if (result.AttemptsLeft > 0 && result.AttemptsLeft < UserSecurity.MaxFailedAttempts && result.User != null && result.User.FailedAttempts >= 2)
+                    SetStatus("PIN incorrecto. Le " + (result.AttemptsLeft == 1 ? "queda 1 intento" : "quedan " + result.AttemptsLeft + " intentos") + " antes de que se bloquee la cuenta.");
+                else SetStatus("PIN incorrecto. Inténtelo de nuevo.");
                 return;
             }
 
-            AppSession.SignIn(authenticated);
+            AppSession.SignIn(result.User);
             DialogResult = DialogResult.OK;
             Close();
+        }
+
+        // Al elegir un usuario cuya cuenta ya figura bloqueada, se avisa de inmediato (la comprobación definitiva la hace TryLogin).
+        private void ShowLockedStatus()
+        {
+            var selected = userBox.SelectedItem as AppUser;
+            if (selected != null && UserSecurity.IsLocked(selected)) SetStatus(UserSecurity.LockedMessage(selected), Tone.Warning);
         }
 
         private void SetLoginEnabled(bool enabled)

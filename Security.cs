@@ -22,6 +22,35 @@ namespace EdenPOS
 
     public static class UserSecurity
     {
+        // RF-01: la cuenta se bloquea al llegar a este número de PIN incorrectos seguidos.
+        public const int MaxFailedAttempts = 5;
+        // La dueña se desbloquea sola tras este tiempo (para no quedar nunca sin acceso); los trabajadores esperan a que ella los desbloquee.
+        public static readonly TimeSpan OwnerLockDuration = TimeSpan.FromMinutes(15);
+
+        // true si la cuenta está bloqueada ahora: trabajadores hasta que la dueña los desbloquee; dueña solo durante OwnerLockDuration.
+        public static bool IsLocked(AppUser user)
+        {
+            if (user == null || !user.LockedSeconds.HasValue) return false;
+            if (user.Role != UserRoles.Owner) return true;
+            // Dueña: el bloqueo dura como máximo OwnerLockDuration pase lo que pase; una fecha futura (reloj retrocedido, segundos negativos) cuenta como vencido.
+            return user.LockedSeconds.Value >= 0 && user.LockedSeconds.Value < OwnerLockDuration.TotalSeconds;
+        }
+
+        // Minutos que faltan para que se desbloquee sola una cuenta de dueña (mínimo 1). Para otros roles no aplica (0).
+        public static int MinutesUntilUnlock(AppUser user)
+        {
+            if (user == null || user.Role != UserRoles.Owner || !user.LockedSeconds.HasValue) return 0;
+            var left = OwnerLockDuration.TotalSeconds - Math.Max(0, user.LockedSeconds.Value);
+            return Math.Max(1, (int)Math.Ceiling(left / 60.0));
+        }
+
+        public static string LockedMessage(AppUser user)
+        {
+            if (user == null || user.Role != UserRoles.Owner) return "Cuenta bloqueada. Pida a la dueña que la desbloquee.";
+            var minutes = MinutesUntilUnlock(user);
+            return "Cuenta bloqueada por intentos fallidos. Vuelva a intentarlo en " + minutes + (minutes == 1 ? " minuto." : " minutos.");
+        }
+
         private const int Iterations = 100000;
         private const int HashSize = 32;
 
@@ -101,6 +130,8 @@ namespace EdenPOS
     public static class AppSession
     {
         public static AppUser CurrentUser { get; private set; }
+        // Aviso que la pantalla de ingreso muestra una sola vez (p. ej. "Sesión cerrada por inactividad").
+        public static string LogoutNotice { get; set; }
         public static bool IsOwner { get { return CurrentUser != null && CurrentUser.Role == UserRoles.Owner; } }
         public static string UserName { get { return CurrentUser == null ? "" : CurrentUser.Name; } }
         public static string RoleName { get { return CurrentUser == null ? "" : UserRoles.DisplayName(CurrentUser.Role); } }

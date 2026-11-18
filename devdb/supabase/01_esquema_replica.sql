@@ -57,6 +57,11 @@ CREATE TABLE IF NOT EXISTS edenpos.usuario (
   updated_at timestamp without time zone NOT NULL
 );
 
+-- Bloqueo de cuentas por intentos fallidos (RF-01). Idempotente (PostgreSQL admite ADD COLUMN IF NOT EXISTS). La app NO replica estas dos
+-- columnas (el bloqueo es local de cada instalación); existen aquí solo para que el esquema coincida con el de MariaDB/MySQL.
+ALTER TABLE edenpos.usuario ADD COLUMN IF NOT EXISTS intentos_fallidos integer NOT NULL DEFAULT 0;
+ALTER TABLE edenpos.usuario ADD COLUMN IF NOT EXISTS bloqueado_en timestamp without time zone NULL;
+
 CREATE TABLE IF NOT EXISTS edenpos.cliente (
   dni varchar(8) NOT NULL PRIMARY KEY,
   nombre_completo varchar(150) NOT NULL,

@@ -12,6 +12,7 @@ namespace EdenPOS
         private readonly DataGridView grid;
         private readonly Button toggleButton;
         private readonly Button editButton;
+        private readonly Button unlockButton;
         private readonly Button deleteButton;
 
         public UserManagementPanel()
@@ -41,12 +42,16 @@ namespace EdenPOS
             toggleButton = Theme.Button("Desactivar", ButtonVariant.Secondary);
             toggleButton.Width = 132; toggleButton.Margin = Padding.Empty;
             toggleButton.Click += (s, e) => ToggleSelected();
+            unlockButton = Theme.Button("Desbloquear", ButtonVariant.Secondary);
+            unlockButton.Width = 132; unlockButton.Margin = new Padding(Theme.Space.Sm, 0, 0, 0);
+            unlockButton.Visible = false;   // solo aparece con una cuenta bloqueada seleccionada (RF-01)
+            unlockButton.Click += (s, e) => UnlockSelected();
             deleteButton = Theme.Button("Eliminar", ButtonVariant.Destructive);
             deleteButton.Width = 112; deleteButton.Dock = DockStyle.Right; deleteButton.Margin = Padding.Empty;
             deleteButton.Click += (s, e) => DeleteSelected();
 
             var left = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, BackColor = Theme.Surface, Margin = Padding.Empty };
-            left.Controls.Add(add); left.Controls.Add(editButton); left.Controls.Add(toggleButton);
+            left.Controls.Add(add); left.Controls.Add(editButton); left.Controls.Add(toggleButton); left.Controls.Add(unlockButton);
             var toolbar = new Panel { Dock = DockStyle.Fill, Height = Theme.Dim.Control, BackColor = Theme.Surface, Margin = new Padding(0, Theme.Space.Lg, 0, Theme.Space.Md) };
             toolbar.Controls.Add(left);
             toolbar.Controls.Add(deleteButton);
@@ -86,6 +91,7 @@ namespace EdenPOS
             e.Paint(e.CellBounds, e.PaintParts & ~DataGridViewPaintParts.ContentForeground);
             Tone tone; bool dot = false;
             if (e.ColumnIndex == 1) tone = user.Role == UserRoles.Owner ? Tone.Brand : Tone.Neutral;
+            else if (UserSecurity.IsLocked(user) && user.Active) { tone = Tone.Warning; dot = true; }
             else { tone = user.Active ? Tone.Success : Tone.Neutral; dot = true; }
             var text = Convert.ToString(e.Value);
             var size = TextRenderer.MeasureText(text, Theme.FieldLabel, new Size(int.MaxValue, int.MaxValue), TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
@@ -126,7 +132,7 @@ namespace EdenPOS
             grid.Rows.Clear();
             foreach (var user in users.OrderBy(x => x.Role == UserRoles.Owner ? 0 : 1).ThenBy(x => x.Name))
             {
-                var row = grid.Rows.Add(user.Name, UserRoles.DisplayName(user.Role), user.Active ? "Activo" : "Inactivo");
+                var row = grid.Rows.Add(user.Name, UserRoles.DisplayName(user.Role), !user.Active ? "Inactivo" : UserSecurity.IsLocked(user) ? "Bloqueada" : "Activo");
                 grid.Rows[row].Tag = user;
                 if (!user.Active) grid.Rows[row].DefaultCellStyle.ForeColor = Theme.Muted;
                 if (user.Id == selectedId) grid.Rows[row].Selected = true;
@@ -145,6 +151,28 @@ namespace EdenPOS
             var user = Current();
             toggleButton.Enabled = user != null;
             toggleButton.Text = user != null && user.Active ? "Desactivar" : "Activar"; editButton.Enabled = user != null; deleteButton.Enabled = user != null;
+            unlockButton.Visible = user != null && UserSecurity.IsLocked(user);
+        }
+
+        private void UnlockSelected()
+        {
+            var user = Current();
+            if (user == null) return;
+            try
+            {
+                AppData.UnlockUser(user.Id);
+                RefreshUsers();
+                Theme.Message(FindForm(), Tone.Success, "Cuenta de " + user.Name + " desbloqueada. Ya puede ingresar con su PIN.", "Usuarios");
+            }
+            catch (InvalidOperationException ex)
+            {
+                Theme.Message(FindForm(), Tone.Warning, ex.Message, "Usuarios");
+            }
+            catch (MySqlConnector.MySqlException ex)
+            {
+                AppData.LogError(ex, "Desbloquear usuario (base de datos)");
+                Theme.Message(FindForm(), Tone.Danger, AppData.DescribeDatabaseError(ex), "Usuarios");
+            }
         }
 
         private void AddUser()
@@ -181,7 +209,9 @@ namespace EdenPOS
                 {
                     AppData.SaveUser(user.Id, dialog.UserName, dialog.Pin, dialog.Role);
                     RefreshUsers();
-                    Theme.Message(FindForm(), Tone.Success, "Usuario actualizado. Los permisos se aplicarán completamente en el próximo inicio de sesión.", "Usuarios");
+                    Theme.Message(FindForm(), Tone.Success, user.Active && UserSecurity.IsLocked(user) && !string.IsNullOrWhiteSpace(dialog.Pin)
+                        ? "Usuario actualizado. Al cambiar el PIN, la cuenta quedó desbloqueada."
+                        : "Usuario actualizado. Los permisos se aplicarán completamente en el próximo inicio de sesión.", "Usuarios");
                 }
                 catch (Exception ex) when (ex is InvalidOperationException || ex is ArgumentException)
                 {
