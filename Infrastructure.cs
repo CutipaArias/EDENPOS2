@@ -2763,11 +2763,8 @@ namespace EdenPOS
             {
                 Directory.CreateDirectory(DataDirectory);
                 var path = PathFor(name);
-                var temp = path + ".tmp";
                 var json = PrettyJson(Json.Serialize(value));
-                File.WriteAllText(temp, json, new UTF8Encoding(false));
-                File.Copy(temp, path, true);
-                File.Delete(temp);
+                AtomicFile.WriteAllText(path, json);
             }
         }
 

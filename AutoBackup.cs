@@ -77,12 +77,7 @@ namespace EdenPOS
                 // (antes se escribía un diccionario vacío y se perdía la cadena de conexión).
                 var data = ReadLocalSettingsStrict();
                 foreach (var pair in changes) data[pair.Key] = pair.Value;
-                Directory.CreateDirectory(DataDirectory);
-                var path = PathFor("settings");
-                var temp = path + ".tmp";
-                File.WriteAllText(temp, PrettyJson(Json.Serialize(data)), new UTF8Encoding(false));
-                if (File.Exists(path)) File.Replace(temp, path, null);
-                else File.Move(temp, path);
+                Save("settings", data);
             }
         }
 

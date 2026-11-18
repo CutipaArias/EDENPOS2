@@ -572,16 +572,8 @@ namespace EdenPOS
                 var data = ReadLocalSettingsStrict();
                 change(data);
                 Directory.CreateDirectory(DataDirectory);
-                ReplicaWriteAtomic(PathFor("settings"), PrettyJson(Json.Serialize(data)));
+                AtomicFile.WriteAllText(PathFor("settings"), PrettyJson(Json.Serialize(data)));
             }
-        }
-
-        private static void ReplicaWriteAtomic(string path, string text)
-        {
-            var temp = path + ".tmp";
-            File.WriteAllText(temp, text, new UTF8Encoding(false));
-            if (File.Exists(path)) File.Replace(temp, path, null);
-            else File.Move(temp, path);
         }
 
         private static string ReplicaBuildConnectionString(string host, int port, string database, string user, string passwordOrNullToKeep, bool requirePassword)
@@ -1279,7 +1271,7 @@ namespace EdenPOS
         private static void ReplicaSaveState(ReplicaStateFile state)
         {
             Directory.CreateDirectory(DataDirectory);
-            ReplicaWriteAtomic(ReplicaStatePath(), Json.Serialize(state));
+            AtomicFile.WriteAllText(ReplicaStatePath(), Json.Serialize(state));
         }
 
         // ===================== Restauración =====================
