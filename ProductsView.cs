@@ -21,6 +21,7 @@ namespace EdenPOS
         private readonly Button addVariantButton;
         private readonly Button editButton;
         private readonly Button deleteButton;
+        private bool updatingCategories;
 
         private sealed class InventorySelection
         {
@@ -58,7 +59,7 @@ namespace EdenPOS
 
             category = Theme.Combo();
             category.Size = new Size(230, Theme.Dim.Field);
-            category.SelectedIndexChanged += (s, e) => LoadProducts();
+            category.SelectedIndexChanged += (s, e) => { if (!updatingCategories) LoadProducts(); };
             search = Theme.TextBox("Buscar artículo o variante");
             search.TextChanged += (s, e) => LoadProducts();
 
@@ -139,20 +140,14 @@ namespace EdenPOS
 
         public void RefreshView()
         {
-            var current = category.SelectedItem == null ? AllCategories : category.SelectedItem.ToString();
-            category.Items.Clear();
-            category.Items.Add(AllCategories);
-            foreach (var item in AppData.Products.Select(x => x.Category).Distinct().OrderBy(x => x)) category.Items.Add(item);
-            var index = category.Items.IndexOf(current);
-            category.SelectedIndex = index >= 0 ? index : 0;
-            LoadProducts();
+            LoadProducts(true);
         }
 
-        private void LoadProducts()
+        private void LoadProducts(bool refreshCategories = false)
         {
             try
             {
-                LoadProductsCore();
+                LoadProductsCore(refreshCategories);
             }
             catch (MySqlConnector.MySqlException ex)
             {
@@ -161,12 +156,32 @@ namespace EdenPOS
             }
         }
 
-        private void LoadProductsCore()
+        private void LoadProductsCore(bool refreshCategories)
         {
-            if (grid == null || category.SelectedItem == null) return;
+            if (grid == null) return;
             var selectedItem = SelectedItem();
             var selectedKey = selectedItem == null ? null : selectedItem.Key;
             var allProducts = AppData.Products;
+            if (refreshCategories)
+            {
+                var current = category.SelectedItem == null ? AllCategories : category.SelectedItem.ToString();
+                updatingCategories = true;
+                category.BeginUpdate();
+                try
+                {
+                    category.Items.Clear();
+                    category.Items.Add(AllCategories);
+                    foreach (var item in allProducts.Select(x => x.Category).Distinct().OrderBy(x => x)) category.Items.Add(item);
+                    var index = category.Items.IndexOf(current);
+                    category.SelectedIndex = index >= 0 ? index : 0;
+                }
+                finally
+                {
+                    category.EndUpdate();
+                    updatingCategories = false;
+                }
+            }
+            if (category.SelectedItem == null) return;
             var query = allProducts.AsEnumerable();
             var selectedCategory = category.SelectedItem.ToString();
             if (selectedCategory != AllCategories) query = query.Where(x => x.Category == selectedCategory);
@@ -178,18 +193,15 @@ namespace EdenPOS
                         option.Name.IndexOf(term, StringComparison.CurrentCultureIgnoreCase) >= 0));
             var products = query.OrderBy(x => x.Category).ThenBy(x => x.Name).ToList();
 
-            var today = DateTime.Today;
-            var entries = AppData.InventoryMovements.Where(x => x.CreatedAt >= today && x.Type == "Entrada").GroupBy(x => x.ProductId).ToDictionary(x => x.Key, x => x.Sum(m => m.Quantity));
-            var paidLines = AppData.Receipts.Where(x => x.CreatedAt >= today && x.Status == "Pagado").SelectMany(x => x.Lines ?? new List<ReceiptLine>()).ToList();
-            var exits = paidLines.GroupBy(x => x.ProductId).ToDictionary(x => x.Key, x => x.Sum(m => m.Quantity));
+            var activity = AppData.GetInventoryActivity(DateTime.Today);
 
             grid.SuspendLayout();
             grid.Rows.Clear();
             foreach (var product in products)
             {
                 var options = ProductOptionCatalog.GetOptions(product).ToList();
-                var entryCount = entries.ContainsKey(product.Id) ? entries[product.Id] : 0;
-                var exitCount = exits.ContainsKey(product.Id) ? exits[product.Id] : 0;
+                var entryCount = InventoryActivity.Count(activity.Entries, product.Id);
+                var exitCount = InventoryActivity.Count(activity.Exits, product.Id);
                 var balance = product.TrackInventory ? product.Stock.ToString() : "—";
                 var type = options.Count > 0 ? "Grupo · " + options.Count : "Artículo";
                 var row = grid.Rows.Add(product.Category, product.Name, type, entryCount, exitCount, balance, Theme.Money(product.Price));
@@ -214,12 +226,8 @@ namespace EdenPOS
                     : options;
                 foreach (var option in visibleOptions)
                 {
-                    var optionEntry = entries.ContainsKey(option.Id) ? entries[option.Id] : 0;
-                    var optionExit = paidLines
-                        .Where(line => line.ProductId == product.Id &&
-                                      ((!string.IsNullOrWhiteSpace(line.OptionId) && line.OptionId == option.Id) ||
-                                       (string.IsNullOrWhiteSpace(line.OptionId) && line.Name == product.Name + " · " + option.Name)))
-                        .Sum(line => line.Quantity);
+                    var optionEntry = InventoryActivity.Count(activity.Entries, option.Id);
+                    var optionExit = activity.OptionExits(product.Id, option.Id, product.Name + " · " + option.Name);
                     var optionBalance = option.TrackInventory ? option.Stock.ToString() : "—";
                     var optionRow = grid.Rows.Add("", "↳  " + option.Name, "Variante", optionEntry, optionExit, optionBalance, Theme.Money(option.Price));
                     var optionSelection = new InventorySelection { Product = product, Option = option };

@@ -6,5 +6,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\EdenPOS.csproj" />
+    <None Include="..\schema.sql" Link="schema.sql" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

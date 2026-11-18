@@ -5,6 +5,7 @@ using System.Linq;
 using System.Reflection;
 using System.Text;
 using EdenPOS;
+using MySqlConnector;
 
 internal static class RegressionChecks
 {
@@ -20,6 +21,7 @@ internal static class RegressionChecks
         {
             CheckAtomicWrites(directory);
             CheckLocalSettings(directory);
+            CheckInventoryDatabase();
             Console.WriteLine("Correcto: " + checks + " comprobaciones.");
             return 0;
         }
@@ -90,5 +92,112 @@ internal static class RegressionChecks
         catch (InvalidOperationException) { failed = true; }
         Check(failed && File.ReadAllText(path) == invalid, "No debe sobrescribir ajustes que no se pueden interpretar.");
         Check(!Directory.EnumerateFiles(directory, "*.tmp").Any(), "El guardado de ajustes no debe dejar temporales.");
+    }
+
+    private static void CheckInventoryDatabase()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("EDENPOS_TEST_MYSQL_CONNECTION");
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            Console.WriteLine("SQL omitido: configure EDENPOS_TEST_MYSQL_CONNECTION para incluir la prueba de inventario.");
+            return;
+        }
+        var builder = new MySqlConnectionStringBuilder(connectionString);
+        // Siempre crea una base propia: no carga fixtures en la base indicada por el usuario.
+        var database = "edenpos_test_" + Guid.NewGuid().ToString("N");
+        builder.Database = "";
+        var originalConnection = Environment.GetEnvironmentVariable("EDENPOS_MYSQL_CONNECTION");
+        using (var admin = new MySqlConnection(builder.ConnectionString))
+        {
+            admin.Open();
+            Execute(admin, "CREATE DATABASE `" + database + "` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci");
+            try
+            {
+                builder.Database = database;
+                using (var connection = new MySqlConnection(builder.ConnectionString))
+                {
+                    connection.Open();
+                    var schemaPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "schema.sql");
+                    var schema = File.ReadAllText(schemaPath);
+                    Execute(connection, schema.Substring(schema.IndexOf("CREATE TABLE rol", StringComparison.Ordinal)));
+                    SeedInventory(connection);
+                }
+                Environment.SetEnvironmentVariable("EDENPOS_MYSQL_CONNECTION", builder.ConnectionString);
+                var today = DateTime.Today;
+                var receipts = AppData.Receipts;
+                var paidLines = receipts.Where(r => r.CreatedAt >= today && r.Status == "Pagado").SelectMany(r => r.Lines).ToList();
+                var entries = AppData.InventoryMovements.Where(m => m.CreatedAt >= today && m.Type == "Entrada")
+                    .GroupBy(m => m.ProductId).ToDictionary(g => g.Key, g => g.Sum(m => m.Quantity));
+                var exits = paidLines.GroupBy(l => l.ProductId).ToDictionary(g => g.Key, g => g.Sum(l => l.Quantity));
+                var activity = Invoke(typeof(AppData), null, "GetInventoryActivity", today);
+                var type = activity.GetType();
+                var actualEntries = (Dictionary<string, int>)type.GetField("Entries", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(activity);
+                var actualExits = (Dictionary<string, int>)type.GetField("Exits", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(activity);
+                Check(actualEntries.Count == entries.Count && entries.All(p => actualEntries[p.Key] == p.Value), "Las entradas deben coincidir con el cálculo anterior.");
+                Check(actualExits.Count == exits.Count && exits.All(p => actualExits[p.Key] == p.Value), "Las salidas deben coincidir con el cálculo anterior.");
+                foreach (var product in new[] { "p1", "p2" })
+                    foreach (var option in new[] { "o1", "o2", "inexistente" })
+                    {
+                        const string name = "Producto · Variante";
+                        var expected = paidLines.Where(l => l.ProductId == product &&
+                            ((!string.IsNullOrWhiteSpace(l.OptionId) && l.OptionId == option) ||
+                            (string.IsNullOrWhiteSpace(l.OptionId) && l.Name == name))).Sum(l => l.Quantity);
+                        Check((int)Invoke(type, activity, "OptionExits", product, option, name) == expected,
+                            "Debe conservar variantes por id, nombre antiguo y producto: " + product + "/" + option);
+                    }
+                Check(actualEntries["p1"] == 4 && actualEntries["o1"] == 2, "Debe excluir entradas antiguas, salidas y tipos con otra capitalización.");
+                Check(actualExits["p1"] == 14 && actualExits["p2"] == 4, "Debe excluir ventas antiguas y reembolsos, conservar medianoche y fechas futuras.");
+                Console.WriteLine("SQL: contadores equivalentes al historial anterior en una base temporal aislada.");
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("EDENPOS_MYSQL_CONNECTION", originalConnection);
+                MySqlConnection.ClearAllPools();
+                Execute(admin, "DROP DATABASE `" + database + "`");
+            }
+        }
+    }
+
+    private static void Execute(MySqlConnection connection, string sql)
+    {
+        using (var command = new MySqlCommand(sql, connection)) command.ExecuteNonQuery();
+    }
+
+    private static void SeedInventory(MySqlConnection connection)
+    {
+        using (var command = new MySqlCommand(@"
+            INSERT INTO recibo (id_recibo, numero, created_at, empleado, cliente_nombre, medio_pago,
+                monto_recibido, monto_efectivo, monto_yape, total, estado) VALUES
+                ('antiguo',1,@ayer,'Prueba','Prueba','Efectivo',10,10,0,10,'Pagado'),
+                ('medianoche',2,@hoy,'Prueba','Prueba','Efectivo',10,10,0,10,'Pagado'),
+                ('actual',3,@ahora,'Prueba','Prueba','Yape',10,0,10,10,'Pagado'),
+                ('futuro',4,@futuro,'Prueba','Prueba','Mixto',10,5,5,10,'Pagado'),
+                ('reembolso',5,@ahora,'Prueba','Prueba','Efectivo',10,10,0,10,'Reembolsado'),
+                ('minusculas',6,@ahora,'Prueba','Prueba','Efectivo',10,10,0,10,'pagado');
+            INSERT INTO recibo_linea (id_recibo, orden, id_producto, id_variante, nombre, precio_unitario, cantidad) VALUES
+                ('antiguo',1,'p1','o1','Antiguo',10,100),
+                ('medianoche',1,'p1','o1','Nombre modificado',10,2),
+                ('actual',1,'p1',NULL,'Producto · Variante',10,3),
+                ('actual',2,'p1',' ','Producto · Variante',10,5),
+                ('actual',3,'p1','o2','Otra variante',10,1),
+                ('actual',4,'p2','o1','Otro producto',10,4),
+                ('actual',5,'p1',NULL,'producto · variante',10,1),
+                ('futuro',1,'p1','o1','Futuro',10,2),
+                ('reembolso',1,'p1','o1','Reembolsado',10,200),
+                ('minusculas',1,'p1','o1','Estado diferente',10,300);
+            INSERT INTO movimiento_inventario (id_movimiento, id_producto, id_variante, producto_nombre, tipo,
+                cantidad, stock_previo, stock_nuevo, nota, created_at) VALUES
+                ('m1','p1',NULL,'Producto','Entrada',4,0,4,'',@hoy),
+                ('m2','p1','o1','Variante','Entrada',2,0,2,'',@ahora),
+                ('m3','p1',NULL,'Producto','Entrada',100,0,100,'',@ayer),
+                ('m4','p1',NULL,'Producto','Salida',20,20,0,'',@ahora),
+                ('m5','p1',NULL,'Producto','entrada',300,0,300,'',@ahora);", connection))
+        {
+            command.Parameters.AddWithValue("@hoy", DateTime.Today);
+            command.Parameters.AddWithValue("@ayer", DateTime.Today.AddSeconds(-1));
+            command.Parameters.AddWithValue("@ahora", DateTime.Today.AddHours(12));
+            command.Parameters.AddWithValue("@futuro", DateTime.Today.AddDays(1));
+            command.ExecuteNonQuery();
+        }
     }
 }
