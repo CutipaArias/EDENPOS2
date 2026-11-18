@@ -23,6 +23,7 @@ internal static class RegressionChecks
             CheckAtomicWrites(directory);
             CheckLocalSettings(directory);
             CheckErrorLog(directory);
+            CheckDniResponses();
             CheckInventoryDatabase();
             Console.WriteLine("Correcto: " + checks + " comprobaciones.");
             return 0;
@@ -120,6 +121,28 @@ internal static class RegressionChecks
         Check(File.ReadAllText(path).Contains("Recuperado"), "Un archivo ocupado no debe impedir registrar errores después.");
     }
 
+    private static void CheckDniResponses()
+    {
+        const string direct = "{\"success\":true,\"data\":{\"nombre_completo\":\"  José   Pérez  \"}}";
+        var result = DniLookupService.ParseResponse(direct, "12345678");
+        Check(result.Success && result.FullName == "JOSÉ PÉREZ", "Debe conservar nombres válidos y normalizar espacios.");
+        result = DniLookupService.ParseResponse("{\"success\":true,\"data\":{\"nombres\":\"Ana\",\"apellido_paterno\":\"Pérez\",\"apellido_materno\":\"Díaz\"}}", "12345678");
+        Check(result.Success && result.FullName == "PÉREZ DÍAZ ANA", "Debe conservar el formato de nombres separados.");
+        foreach (var invalidName in new[] { "true", "12345", "{}", "[]", "null" })
+            Check(!DniLookupService.ParseResponse("{\"success\":true,\"data\":{\"nombre_completo\":" + invalidName + "}}", "12345678").Success,
+                "No debe interpretar tipos JSON como nombres: " + invalidName);
+        Check(!DniLookupService.ParseResponse("{incompleto", "12345678").Success, "Debe tolerar respuestas dañadas.");
+        Check(!DniLookupService.ParseResponse("{\"success\":false,\"message\":\"No encontrado\"}", "12345678").Success, "Debe conservar los fallos del proveedor.");
+        Check(!DniLookupService.LookupAsync("12").GetAwaiter().GetResult().Success, "Debe rechazar DNI incompleto sin consultar la base.");
+        Parallel.For(0, 64, index =>
+        {
+            var parsed = DniLookupService.ParseResponse(direct, "12345678");
+            if (!parsed.Success || parsed.FullName != "JOSÉ PÉREZ")
+                throw new InvalidOperationException("Falló el análisis concurrente de respuestas DNI.");
+        });
+        Check(true, "Debe analizar respuestas concurrentes sin mezclar resultados.");
+    }
+
     private static void CheckInventoryDatabase()
     {
         var connectionString = Environment.GetEnvironmentVariable("EDENPOS_TEST_MYSQL_CONNECTION");
@@ -173,6 +196,17 @@ internal static class RegressionChecks
                     }
                 Check(actualEntries["p1"] == 4 && actualEntries["o1"] == 2, "Debe excluir entradas antiguas, salidas y tipos con otra capitalización.");
                 Check(actualExits["p1"] == 14 && actualExits["p2"] == 4, "Debe excluir ventas antiguas y reembolsos, conservar medianoche y fechas futuras.");
+                AppData.SaveCustomer("12345678", "Cliente local", "Prueba");
+                Task<DniLookupResult> lookup;
+                var sync = typeof(AppData).GetField("Sync", BindingFlags.Static | BindingFlags.NonPublic).GetValue(null);
+                lock (sync)
+                {
+                    lookup = DniLookupService.LookupAsync("12345678");
+                    Check(!lookup.IsCompleted, "La consulta debe devolver el control aunque la base local esté ocupada.");
+                }
+                var localCustomer = lookup.GetAwaiter().GetResult();
+                Check(localCustomer.Success && localCustomer.FullName == "CLIENTE LOCAL" && localCustomer.Source == "Registro local",
+                    "Debe conservar la búsqueda local sin solicitar acceso al proveedor.");
                 Console.WriteLine("SQL: contadores equivalentes al historial anterior en una base temporal aislada.");
             }
             finally

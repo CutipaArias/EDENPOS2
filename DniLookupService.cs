@@ -23,14 +23,19 @@ namespace EdenPOS
         public const string ProviderName = "ApiPeruDev (padrón reducido SUNAT)";
         public const string Endpoint = "https://apiperu.dev/api/dni";
         private static readonly HttpClient Client = CreateClient();
-        private static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
 
-        public static async Task<DniLookupResult> LookupAsync(string dni)
+        public static Task<DniLookupResult> LookupAsync(string dni)
         {
             var normalized = Validation.NormalizeDni(dni);
             if (!Validation.IsValidDni(normalized))
-                return Fail(normalized, "El DNI debe contener exactamente 8 dígitos.");
+                return Task.FromResult(Fail(normalized, "El DNI debe contener exactamente 8 dígitos."));
 
+            // MySQL y el guardado local también pueden tardar: toda la consulta corre fuera de la interfaz.
+            return Task.Run(() => LookupCoreAsync(normalized));
+        }
+
+        private static async Task<DniLookupResult> LookupCoreAsync(string normalized)
+        {
             Customer local;
             AppSettings settings;
             try
@@ -57,10 +62,10 @@ namespace EdenPOS
                 {
                     request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
                     request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-                    request.Content = new StringContent(Json.Serialize(new Dictionary<string, string> { { "dni", normalized } }), Encoding.UTF8, "application/json");
-                    using (var response = await Client.SendAsync(request).ConfigureAwait(true))
+                    request.Content = new StringContent(new JavaScriptSerializer().Serialize(new Dictionary<string, string> { { "dni", normalized } }), Encoding.UTF8, "application/json");
+                    using (var response = await Client.SendAsync(request).ConfigureAwait(false))
                     {
-                        var content = await response.Content.ReadAsStringAsync().ConfigureAwait(true);
+                        var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
                         if (response.StatusCode == HttpStatusCode.Unauthorized || response.StatusCode == HttpStatusCode.Forbidden)
                             return Fail(normalized, "El token de consulta no es válido o no tiene permiso.");
                         if (!response.IsSuccessStatusCode)
@@ -89,7 +94,8 @@ namespace EdenPOS
         {
             try
             {
-                var root = Json.DeserializeObject(json) as Dictionary<string, object>;
+                // Un serializador por respuesta evita compartir estado entre consultas simultáneas.
+                var root = new JavaScriptSerializer().DeserializeObject(json) as Dictionary<string, object>;
                 if (root == null || !root.ContainsKey("success") || !(root["success"] is bool) || !(bool)root["success"])
                     return Fail(requestedDni, ReadString(root, "message") ?? "El DNI no fue encontrado en las fuentes públicas.");
                 var data = root.ContainsKey("data") ? root["data"] as Dictionary<string, object> : null;
@@ -121,8 +127,8 @@ namespace EdenPOS
 
         private static string ReadString(Dictionary<string, object> data, string key)
         {
-            if (data == null || !data.ContainsKey(key) || data[key] == null) return null;
-            return Convert.ToString(data[key]);
+            object value;
+            return data != null && data.TryGetValue(key, out value) ? value as string : null;
         }
 
         private static DniLookupResult Fail(string dni, string message)
@@ -133,7 +139,11 @@ namespace EdenPOS
         private static HttpClient CreateClient()
         {
             ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
-            return new HttpClient { Timeout = TimeSpan.FromSeconds(12) };
+            return new HttpClient
+            {
+                Timeout = TimeSpan.FromSeconds(12),
+                MaxResponseContentBufferSize = 256 * 1024
+            };
         }
     }
 }

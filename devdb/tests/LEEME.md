@@ -15,6 +15,9 @@ También comprueban el registro concurrente de errores, la rotación del archivo
 al alcanzar 2 MiB y la recuperación después de un bloqueo. Se conserva el bloque
 anterior en `errors.log.1`; no se recorta el contenido de una excepción individual.
 
+Las comprobaciones de DNI cubren nombres completos y separados, respuestas
+dañadas, tipos JSON inválidos y consultas concurrentes. No contactan al proveedor.
+
 Para comprobar también los contadores de Inventario contra MySQL/MariaDB:
 
 ```powershell
@@ -28,3 +31,5 @@ y la elimina al terminar; el usuario SQL necesita permisos para crear y eliminar
 bases. Compara los resultados con el cálculo anterior usando ventas antiguas,
 medianoche, reembolsos, variantes por identificador y nombres de recibos antiguos.
 La prueba SQL se omite explícitamente si no se configura la variable.
+También verifica que la consulta de DNI conserve el registro local y devuelva
+el control de inmediato cuando el acceso a datos esté ocupado.
