@@ -23,5 +23,3 @@ errors.log
 *.edenbackup
 .env
 
-# Configuración local de Claude Code
-.claude/settings.local.json

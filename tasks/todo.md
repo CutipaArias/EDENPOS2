@@ -49,7 +49,7 @@ Ver `tasks/plan.md` para contexto completo de cada tarea. Verificación en todas
 - Fases 1–4 implementadas, revisadas y probadas por reflexión: 98/98 comprobaciones contra el MariaDB 10.4 de XAMPP (puerto 3306, base temporal ya borrada).
 - Pendiente: prueba manual del usuario en la interfaz (checkpoints).
 
-## Rediseño visual con apple-design (2026-11-17)
+## Rediseño visual (2026-11-17)
 - [x] Sistema de diseño en `Theme.cs` + `Controls.cs` (tokens, botones, campos, tablas, tarjetas, cabecera, etiquetas, avisos)
 - [x] Herramienta de capturas `devdb/tools/Capturas.ps1` y comparativa `devdb/capturas/comparativa.html`
 - [x] Rediseño de todas las pantallas y diálogos (inicio, menú, ventas y cobro, inventario, turno, recibos, configuración, usuarios, reportes, auditoría)

@@ -8,7 +8,7 @@ using System.Windows.Forms;
 namespace EdenPOS
 {
     // =====================================================================================================================
-    // SISTEMA DE DISEÑO DE EDENPOS  (principios de apple-design aplicables a WinForms/GDI+)
+    // SISTEMA DE DISEÑO DE EDENPOS  (principios de las guías de interfaz de Apple aplicables a WinForms/GDI+)
     //
     // Regla de oro: NINGUN color, fuente, espacio ni radio sale "de la nada": todo viene de un token de este archivo o de
     // Controls.cs. Si falta un token, se añade aquí; no se inventa en la pantalla.
