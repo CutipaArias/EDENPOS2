@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using System.Threading.Tasks;
 using EdenPOS;
 using MySqlConnector;
 
@@ -21,6 +22,7 @@ internal static class RegressionChecks
         {
             CheckAtomicWrites(directory);
             CheckLocalSettings(directory);
+            CheckErrorLog(directory);
             CheckInventoryDatabase();
             Console.WriteLine("Correcto: " + checks + " comprobaciones.");
             return 0;
@@ -92,6 +94,30 @@ internal static class RegressionChecks
         catch (InvalidOperationException) { failed = true; }
         Check(failed && File.ReadAllText(path) == invalid, "No debe sobrescribir ajustes que no se pueden interpretar.");
         Check(!Directory.EnumerateFiles(directory, "*.tmp").Any(), "El guardado de ajustes no debe dejar temporales.");
+    }
+
+    private static void CheckErrorLog(string directory)
+    {
+        var path = Path.Combine(directory, "errors.log");
+        var previous = path + ".1";
+        File.Delete(path);
+        Parallel.For(0, 64, index => AppData.LogError(new InvalidOperationException("Fallo de prueba"), "Evento-" + index + ":"));
+        var text = File.ReadAllText(path);
+        for (var index = 0; index < 64; index++)
+            Check(text.Contains("Evento-" + index + ":"), "No debe perder errores concurrentes: " + index);
+        var large = new string('a', 2 * 1024 * 1024);
+        File.WriteAllText(path, large);
+        AppData.LogError(null, "Después de rotar");
+        Check(File.ReadAllText(previous) == large, "Debe conservar el registro anterior al rotar.");
+        Check(File.ReadAllText(path).Contains("Después de rotar"), "Debe escribir en un registro nuevo tras rotar.");
+        Check(new FileInfo(path).Length < 4096, "El registro activo debe volver a ser pequeño.");
+        File.WriteAllText(path, large + "segunda rotación");
+        AppData.LogError(null, "Segunda rotación");
+        Check(File.ReadAllText(previous) == large + "segunda rotación", "Debe reemplazar el archivo anterior al volver a rotar.");
+        using (var held = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None))
+            AppData.LogError(null, "Archivo ocupado");
+        AppData.LogError(null, "Recuperado");
+        Check(File.ReadAllText(path).Contains("Recuperado"), "Un archivo ocupado no debe impedir registrar errores después.");
     }
 
     private static void CheckInventoryDatabase()

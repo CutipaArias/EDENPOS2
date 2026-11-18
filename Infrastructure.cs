@@ -2726,10 +2726,9 @@ namespace EdenPOS
         {
             try
             {
-                Directory.CreateDirectory(DataDirectory);
                 var text = "[" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "] " + context + Environment.NewLine +
                            (exception == null ? "Error desconocido" : exception.ToString()) + Environment.NewLine + new string('-', 80) + Environment.NewLine;
-                File.AppendAllText(Path.Combine(DataDirectory, "errors.log"), text, Encoding.UTF8);
+                ErrorLog.Append(Path.Combine(DataDirectory, "errors.log"), text);
             }
             catch { }
         }

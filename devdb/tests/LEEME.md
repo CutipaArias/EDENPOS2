@@ -11,6 +11,10 @@ Verifican escritura atómica, recuperación ante archivos bloqueados, limpieza d
 temporales y conservación de claves de configuración. Usan una carpeta temporal
 propia y no modifican los ajustes de la aplicación instalada.
 
+También comprueban el registro concurrente de errores, la rotación del archivo
+al alcanzar 2 MiB y la recuperación después de un bloqueo. Se conserva el bloque
+anterior en `errors.log.1`; no se recorta el contenido de una excepción individual.
+
 Para comprobar también los contadores de Inventario contra MySQL/MariaDB:
 
 ```powershell
