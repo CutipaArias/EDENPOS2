@@ -18,12 +18,12 @@ namespace EdenPOS
         public static string ResolveConnectionString()
         {
             var fromEnvironment = Environment.GetEnvironmentVariable(EnvironmentVariable);
-            if (!string.IsNullOrWhiteSpace(fromEnvironment)) return fromEnvironment.Trim();
+            if (!string.IsNullOrWhiteSpace(fromEnvironment)) return HardenConnectionString(fromEnvironment.Trim());
             // Se cachea la cadena resuelta (leer settings.json y descifrar con DPAPI en cada Open() es caro).
             var cached = cachedConnectionString;
             if (cached != null) return cached;
             var stored = Unprotect(AppData.LocalMySqlConnectionStringProtected);
-            cached = string.IsNullOrWhiteSpace(stored) ? DefaultConnectionString : stored;
+            cached = HardenConnectionString(string.IsNullOrWhiteSpace(stored) ? DefaultConnectionString : stored);
             cachedConnectionString = cached;
             return cached;
         }
@@ -32,6 +32,18 @@ namespace EdenPOS
         public static void InvalidateCache()
         {
             cachedConnectionString = null;
+        }
+
+        private static string HardenConnectionString(string value)
+        {
+            var builder = new MySqlConnectionStringBuilder(value)
+            {
+                ConnectionReset = true,
+                IgnoreCommandTransaction = false,
+                PersistSecurityInfo = false,
+                AllowLoadLocalInfile = false
+            };
+            return builder.ConnectionString;
         }
 
         public static MySqlConnection Open()
@@ -139,7 +151,10 @@ namespace EdenPOS
                 var clearBytes = ProtectedData.Unprotect(Convert.FromBase64String(protectedValue), Entropy, DataProtectionScope.CurrentUser);
                 return Encoding.UTF8.GetString(clearBytes);
             }
-            catch { return ""; }
+            catch (Exception ex) when (ex is FormatException || ex is CryptographicException)
+            {
+                throw new InvalidOperationException("No se pudo descifrar la configuración de MySQL. Configure de nuevo la conexión con esta cuenta de Windows.", ex);
+            }
         }
     }
 }

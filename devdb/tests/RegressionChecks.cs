@@ -25,6 +25,7 @@ internal static class RegressionChecks
             CheckErrorLog(directory);
             CheckDniResponses();
             CheckPinSecurity();
+            CheckConnectionSettings(directory);
             CheckInventoryDatabase();
             Console.WriteLine("Correcto: " + checks + " comprobaciones.");
             return 0;
@@ -169,6 +170,76 @@ internal static class RegressionChecks
         Check(!UserSecurity.VerifyPin(user, "1234"), "Un usuario inactivo no puede ingresar.");
     }
 
+    private static void CheckConnectionSettings(string directory)
+    {
+        var path = Path.Combine(directory, "settings.json");
+        var previous = File.ReadAllText(path);
+        var environment = Environment.GetEnvironmentVariable("EDENPOS_MYSQL_CONNECTION");
+        try
+        {
+            Environment.SetEnvironmentVariable("EDENPOS_MYSQL_CONNECTION", null);
+            foreach (var invalid in new[] { "{dañado", "null", "{\"MySqlConnectionStringProtected\":123}", "{\"MySqlConnectionStringProtected\":\"cifrado-inválido\"}",
+                "{\"MySqlConnectionStringProtected\":\"" + Convert.ToBase64String(new byte[64]) + "\"}" })
+            {
+                File.WriteAllText(path, invalid);
+                SqlConnectionFactory.InvalidateCache();
+                var failed = false;
+                try { SqlConnectionFactory.ResolveConnectionString(); }
+                catch (InvalidOperationException) { failed = true; }
+                Check(failed, "No debe usar root como alternativa ante ajustes dañados.");
+                Check(File.ReadAllText(path) == invalid, "Debe conservar la configuración dañada para recuperarla.");
+            }
+            Environment.SetEnvironmentVariable("EDENPOS_MYSQL_CONNECTION",
+                "Server=127.0.0.1;Database=prueba;ConnectionReset=false;IgnoreCommandTransaction=true;PersistSecurityInfo=true;AllowLoadLocalInfile=true");
+            var builder = new MySqlConnectionStringBuilder(SqlConnectionFactory.ResolveConnectionString());
+            Check(builder.ConnectionReset && !builder.IgnoreCommandTransaction && !builder.PersistSecurityInfo && !builder.AllowLoadLocalInfile,
+                "Debe aplicar las protecciones incluso si la cadena intenta desactivarlas.");
+            Check(builder.Database == "prueba", "Debe conservar el destino configurado por el entorno.");
+            Environment.SetEnvironmentVariable("EDENPOS_MYSQL_CONNECTION", null);
+            File.WriteAllText(path, "{}");
+            SqlConnectionFactory.InvalidateCache();
+            Check(new MySqlConnectionStringBuilder(SqlConnectionFactory.ResolveConnectionString()).Database == "edenpos",
+                "El primer inicio sin conexión configurada conserva la compatibilidad local.");
+        }
+        finally
+        {
+            File.WriteAllText(path, previous);
+            Environment.SetEnvironmentVariable("EDENPOS_MYSQL_CONNECTION", environment);
+            SqlConnectionFactory.InvalidateCache();
+        }
+    }
+
+    private static void CheckDatabaseSession()
+    {
+        using (var connection = SqlConnectionFactory.Open())
+        {
+            Execute(connection, "SET SESSION foreign_key_checks = 0; SET SESSION sql_mode = ''; SET @edenpos_test_marker = 123");
+        }
+        using (var connection = SqlConnectionFactory.Open())
+        {
+            using (var command = new MySqlCommand("SELECT @@foreign_key_checks, @@sql_mode, @edenpos_test_marker", connection))
+            using (var reader = command.ExecuteReader())
+            {
+                reader.Read();
+                Check(reader.GetInt32(0) == 1, "Debe recuperar las claves foráneas al reutilizar una conexión.");
+                Check(reader.GetString(1).Contains("STRICT_TRANS_TABLES"), "Debe mantener el modo estricto.");
+                Check(reader.IsDBNull(2), "Las variables de sesión no deben filtrarse entre conexiones.");
+            }
+            using (var transaction = connection.BeginTransaction())
+            {
+                var rejected = false;
+                try { Execute(connection, "SELECT 1"); }
+                catch (InvalidOperationException) { rejected = true; }
+                Check(rejected, "Debe rechazar comandos que omiten la transacción activa.");
+            }
+            using (var transaction = connection.BeginTransaction())
+            using (var command = new MySqlCommand("INSERT INTO cliente (dni, nombre_completo, origen, created_at, updated_at) VALUES ('99999999', 'Temporal', 'Prueba', NOW(), NOW())", connection, transaction))
+                command.ExecuteNonQuery();
+            using (var command = new MySqlCommand("SELECT COUNT(*) FROM cliente WHERE dni = '99999999'", connection))
+                Check(Convert.ToInt32(command.ExecuteScalar()) == 0, "Una transacción no confirmada debe revertir sus cambios.");
+        }
+    }
+
     private static void CheckInventoryDatabase()
     {
         var connectionString = Environment.GetEnvironmentVariable("EDENPOS_TEST_MYSQL_CONNECTION");
@@ -197,7 +268,10 @@ internal static class RegressionChecks
                     Execute(connection, schema.Substring(schema.IndexOf("CREATE TABLE rol", StringComparison.Ordinal)));
                     SeedInventory(connection);
                 }
+                builder.AllowUserVariables = true;
+                builder.MaximumPoolSize = 1;
                 Environment.SetEnvironmentVariable("EDENPOS_MYSQL_CONNECTION", builder.ConnectionString);
+                CheckDatabaseSession();
                 var today = DateTime.Today;
                 var receipts = AppData.Receipts;
                 var paidLines = receipts.Where(r => r.CreatedAt >= today && r.Status == "Pagado").SelectMany(r => r.Lines).ToList();

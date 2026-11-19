@@ -510,7 +510,15 @@ namespace EdenPOS
         // Lectura sin SQL para SqlConnectionFactory (evita recursión al averiguar cómo conectarse).
         internal static string LocalMySqlConnectionStringProtected
         {
-            get { return LoadLocalSettings().MySqlConnectionStringProtected ?? ""; }
+            get
+            {
+                var settings = ReadLocalSettingsStrict();
+                object value;
+                if (!settings.TryGetValue("MySqlConnectionStringProtected", out value)) return "";
+                if (!(value is string))
+                    throw new InvalidOperationException("La configuración local de MySQL no es válida.");
+                return (string)value;
+            }
         }
 
         // Lee settings.json completo. Si no existe devuelve un diccionario vacío; si existe y no se puede leer o interpretar (bloqueado, corrupto),

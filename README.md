@@ -44,6 +44,23 @@ Opcional: `devdb\seed\GenerarDatosPrueba.ps1` carga datos de prueba (ver `devdb\
 
 Variables de entorno: `EDENPOS_MYSQL_CONNECTION` (otra cadena de conexión) y `EDENPOS_DATA_PATH` (otra carpeta de datos locales).
 
+### Conexión y seguridad
+
+La conexión local predeterminada con `root` sin contraseña se conserva para el
+primer inicio con XAMPP. Para uso real, configure `EDENPOS_MYSQL_CONNECTION` con
+un usuario propio y permisos limitados a la base de la aplicación; use TLS con
+`SslMode=VerifyFull` si accede a un servidor remoto y configure su certificado CA.
+
+Si existe una configuración local dañada o que otra cuenta de Windows no puede
+descifrar, el inicio se detiene con un mensaje de error. Recupere `settings.json`
+o configure una conexión válida mediante la variable de entorno; no se cambia
+silenciosamente al usuario predeterminado.
+
+Cada conexión restablece su sesión y activa el modo SQL estricto. La aplicación
+mantiene habilitada la comprobación de transacciones y deshabilita la carga de
+archivos locales y la conservación de contraseñas en conexiones abiertas, aunque
+la cadena de conexión intente cambiar esas opciones.
+
 ## Copia en la nube
 
 - **Carpeta:** Configuración → Copias de seguridad y datos → Copia automática. Elija una carpeta de OneDrive o Google Drive.

@@ -31,5 +31,12 @@ y la elimina al terminar; el usuario SQL necesita permisos para crear y eliminar
 bases. Compara los resultados con el cálculo anterior usando ventas antiguas,
 medianoche, reembolsos, variantes por identificador y nombres de recibos antiguos.
 La prueba SQL se omite explícitamente si no se configura la variable.
+Las pruebas de seguridad rechazan hashes y sales de PIN truncados, configuraciones
+locales dañadas y credenciales que no se pueden descifrar. Verifican que estas
+configuraciones nunca provoquen una conexión alternativa con el usuario predeterminado.
+Las pruebas SQL también fuerzan la reutilización de una única conexión del pool,
+comprueban el restablecimiento de claves foráneas, modo estricto y variables de
+sesión, y verifican el rechazo de comandos sin su transacción y la reversión de
+escrituras no confirmadas.
 También verifica que la consulta de DNI conserve el registro local y devuelva
 el control de inmediato cuando el acceso a datos esté ocupado.
