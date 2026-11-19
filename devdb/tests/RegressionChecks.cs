@@ -24,6 +24,7 @@ internal static class RegressionChecks
             CheckLocalSettings(directory);
             CheckErrorLog(directory);
             CheckDniResponses();
+            CheckPinSecurity();
             CheckInventoryDatabase();
             Console.WriteLine("Correcto: " + checks + " comprobaciones.");
             return 0;
@@ -141,6 +142,31 @@ internal static class RegressionChecks
                 throw new InvalidOperationException("Falló el análisis concurrente de respuestas DNI.");
         });
         Check(true, "Debe analizar respuestas concurrentes sin mezclar resultados.");
+    }
+
+    private static void CheckPinSecurity()
+    {
+        var user = UserSecurity.CreateUser("Prueba", "1234", UserRoles.Worker);
+        Check(UserSecurity.VerifyPin(user, "1234"), "Debe aceptar el PIN correcto.");
+        Check(!UserSecurity.VerifyPin(user, "9876"), "Debe rechazar otro PIN.");
+        var hash = user.PinHash;
+        var salt = user.PinSalt;
+        user.PinHash = Convert.ToBase64String(Convert.FromBase64String(hash).Take(1).ToArray());
+        Check(!UserSecurity.VerifyPin(user, "1234"), "Un hash truncado no debe reducir la seguridad del PIN.");
+        foreach (var invalid in new[] { " ", "\t", "AA==", Convert.ToBase64String(new byte[33]), "base64 inválido" })
+        {
+            user.PinHash = invalid;
+            Check(!UserSecurity.VerifyPin(user, "1234"), "Debe rechazar hashes dañados sin autenticar.");
+        }
+        user.PinHash = hash;
+        foreach (var invalid in new[] { "AA==", Convert.ToBase64String(new byte[17]), "base64 inválido" })
+        {
+            user.PinSalt = invalid;
+            Check(!UserSecurity.VerifyPin(user, "1234"), "Debe rechazar sales dañadas.");
+        }
+        user.PinSalt = salt;
+        user.Active = false;
+        Check(!UserSecurity.VerifyPin(user, "1234"), "Un usuario inactivo no puede ingresar.");
     }
 
     private static void CheckInventoryDatabase()
