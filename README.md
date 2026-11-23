@@ -44,6 +44,23 @@ Opcional: `devdb\seed\GenerarDatosPrueba.ps1` carga datos de prueba (ver `devdb\
 
 Variables de entorno: `EDENPOS_MYSQL_CONNECTION` (otra cadena de conexión) y `EDENPOS_DATA_PATH` (otra carpeta de datos locales).
 
+### Conexión y seguridad
+
+La conexión local predeterminada con `root` sin contraseña se conserva para el
+primer inicio con XAMPP. Para uso real, configure `EDENPOS_MYSQL_CONNECTION` con
+un usuario propio y permisos limitados a la base de la aplicación; use TLS con
+`SslMode=VerifyFull` si accede a un servidor remoto y configure su certificado CA.
+
+Si existe una configuración local dañada o que otra cuenta de Windows no puede
+descifrar, el inicio se detiene con un mensaje de error. Recupere `settings.json`
+o configure una conexión válida mediante la variable de entorno; no se cambia
+silenciosamente al usuario predeterminado.
+
+Cada conexión restablece su sesión y activa el modo SQL estricto. La aplicación
+mantiene habilitada la comprobación de transacciones y deshabilita la carga de
+archivos locales y la conservación de contraseñas en conexiones abiertas, aunque
+la cadena de conexión intente cambiar esas opciones.
+
 ## Copia en la nube
 
 - **Carpeta:** Configuración → Copias de seguridad y datos → Copia automática. Elija una carpeta de OneDrive o Google Drive.
@@ -58,7 +75,31 @@ Variables de entorno: `EDENPOS_MYSQL_CONNECTION` (otra cadena de conexión) y `E
 | `devdb/supabase/` | Scripts y guía de la réplica en Supabase |
 | `devdb/seed/`, `devdb/tools/` | Datos de prueba y herramientas de capturas |
 | `devdb/capturas/` | Capturas antes/después del rediseño (`comparativa.html`) |
+| `devdb/tests/` | Pruebas de regresión |
+| `docs/img/` | Capturas de pantalla de la aplicación |
 | `SPEC.md`, `tasks/` | Especificación y plan de trabajo |
+
+## Requerimientos (FD03) y dónde están
+
+| Requerimiento | Pantalla | Código |
+|---|---|---|
+| RF-01 Autenticar usuarios | Inicio de sesión | `LoginForm.cs`, `AppData.TryLogin` (bloqueo tras 5 intentos) y cierre por inactividad en `MainForm.cs` |
+| RF-02 Usuarios y roles | Configuración → Usuarios | `UserManagement.cs` |
+| RF-03, RF-04, RF-05 Caja | Turno | `ShiftView.cs`, `AppData.OpenNewShift` / `CloseShift` |
+| RF-07 a RF-10 Visita, casilleros, consumos y cobro | Ventas | `SalesView.cs`, `Dialogs.cs`, `AppData.AddReceipt` |
+| RF-11 Promociones | Cobro y Configuración → Promociones | `Promotions.cs` |
+| RF-12, RF-13, RF-21 Boletas (simuladas) | Recibos y Configuración → Facturación | `ElectronicInvoicing.cs` |
+| RF-14 a RF-16 Inventario y stock mínimo | Inventario | `ProductsView.cs` |
+| RF-17 Reportes | Reportes | `Reports.cs`, `ReportsView.cs` |
+| RF-18 Respaldos | Configuración → Copias de seguridad | `AutoBackup.cs`, `SupabaseReplica.cs` |
+| RNF-03 Seguridad del PIN | — | `Security.cs` (PBKDF2 con sal) |
+| RNF-04 Trazabilidad | Auditoría | `AuditView.cs`, `AppData.RegistrarAuditoria` |
+
+## Capturas
+
+![Pantalla de venta](docs/img/Preview.png)
+![Inicio de sesión](docs/img/Preview-Login.png)
+![Cobro](docs/img/Preview-Cobro.png)
 
 ## Atajos
 

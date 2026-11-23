@@ -20,6 +20,13 @@ settings.json
 *.protected
 supabase-replica.state.json
 errors.log
+errors.log.1
 *.edenbackup
 .env
 
+# Archivos del sistema y de pruebas
+Thumbs.db
+desktop.ini
+TestResults/
+*.tmp
+packages/

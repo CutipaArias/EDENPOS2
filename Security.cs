@@ -108,6 +108,8 @@ namespace EdenPOS
             {
                 var salt = Convert.FromBase64String(user.PinSalt);
                 var expected = Convert.FromBase64String(user.PinHash);
+                // Un hash vacío no representa un PIN válido; tampoco se aceptan tamaños arbitrarios.
+                if (salt.Length != 16 || expected.Length != HashSize) return false;
                 using (var derive = new Rfc2898DeriveBytes(pin, salt, Iterations))
                     return FixedTimeEquals(expected, derive.GetBytes(expected.Length));
             }

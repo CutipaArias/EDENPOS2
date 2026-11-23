@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using System.Threading.Tasks;
 using EdenPOS;
 using MySqlConnector;
 
@@ -21,6 +22,10 @@ internal static class RegressionChecks
         {
             CheckAtomicWrites(directory);
             CheckLocalSettings(directory);
+            CheckErrorLog(directory);
+            CheckDniResponses();
+            CheckPinSecurity();
+            CheckConnectionSettings(directory);
             CheckInventoryDatabase();
             Console.WriteLine("Correcto: " + checks + " comprobaciones.");
             return 0;
@@ -94,6 +99,147 @@ internal static class RegressionChecks
         Check(!Directory.EnumerateFiles(directory, "*.tmp").Any(), "El guardado de ajustes no debe dejar temporales.");
     }
 
+    private static void CheckErrorLog(string directory)
+    {
+        var path = Path.Combine(directory, "errors.log");
+        var previous = path + ".1";
+        File.Delete(path);
+        Parallel.For(0, 64, index => AppData.LogError(new InvalidOperationException("Fallo de prueba"), "Evento-" + index + ":"));
+        var text = File.ReadAllText(path);
+        for (var index = 0; index < 64; index++)
+            Check(text.Contains("Evento-" + index + ":"), "No debe perder errores concurrentes: " + index);
+        var large = new string('a', 2 * 1024 * 1024);
+        File.WriteAllText(path, large);
+        AppData.LogError(null, "Después de rotar");
+        Check(File.ReadAllText(previous) == large, "Debe conservar el registro anterior al rotar.");
+        Check(File.ReadAllText(path).Contains("Después de rotar"), "Debe escribir en un registro nuevo tras rotar.");
+        Check(new FileInfo(path).Length < 4096, "El registro activo debe volver a ser pequeño.");
+        File.WriteAllText(path, large + "segunda rotación");
+        AppData.LogError(null, "Segunda rotación");
+        Check(File.ReadAllText(previous) == large + "segunda rotación", "Debe reemplazar el archivo anterior al volver a rotar.");
+        using (var held = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None))
+            AppData.LogError(null, "Archivo ocupado");
+        AppData.LogError(null, "Recuperado");
+        Check(File.ReadAllText(path).Contains("Recuperado"), "Un archivo ocupado no debe impedir registrar errores después.");
+    }
+
+    private static void CheckDniResponses()
+    {
+        const string direct = "{\"success\":true,\"data\":{\"nombre_completo\":\"  José   Pérez  \"}}";
+        var result = DniLookupService.ParseResponse(direct, "12345678");
+        Check(result.Success && result.FullName == "JOSÉ PÉREZ", "Debe conservar nombres válidos y normalizar espacios.");
+        result = DniLookupService.ParseResponse("{\"success\":true,\"data\":{\"nombres\":\"Ana\",\"apellido_paterno\":\"Pérez\",\"apellido_materno\":\"Díaz\"}}", "12345678");
+        Check(result.Success && result.FullName == "PÉREZ DÍAZ ANA", "Debe conservar el formato de nombres separados.");
+        foreach (var invalidName in new[] { "true", "12345", "{}", "[]", "null" })
+            Check(!DniLookupService.ParseResponse("{\"success\":true,\"data\":{\"nombre_completo\":" + invalidName + "}}", "12345678").Success,
+                "No debe interpretar tipos JSON como nombres: " + invalidName);
+        Check(!DniLookupService.ParseResponse("{incompleto", "12345678").Success, "Debe tolerar respuestas dañadas.");
+        Check(!DniLookupService.ParseResponse("{\"success\":false,\"message\":\"No encontrado\"}", "12345678").Success, "Debe conservar los fallos del proveedor.");
+        Check(!DniLookupService.LookupAsync("12").GetAwaiter().GetResult().Success, "Debe rechazar DNI incompleto sin consultar la base.");
+        Parallel.For(0, 64, index =>
+        {
+            var parsed = DniLookupService.ParseResponse(direct, "12345678");
+            if (!parsed.Success || parsed.FullName != "JOSÉ PÉREZ")
+                throw new InvalidOperationException("Falló el análisis concurrente de respuestas DNI.");
+        });
+        Check(true, "Debe analizar respuestas concurrentes sin mezclar resultados.");
+    }
+
+    private static void CheckPinSecurity()
+    {
+        var user = UserSecurity.CreateUser("Prueba", "1234", UserRoles.Worker);
+        Check(UserSecurity.VerifyPin(user, "1234"), "Debe aceptar el PIN correcto.");
+        Check(!UserSecurity.VerifyPin(user, "9876"), "Debe rechazar otro PIN.");
+        var hash = user.PinHash;
+        var salt = user.PinSalt;
+        user.PinHash = Convert.ToBase64String(Convert.FromBase64String(hash).Take(1).ToArray());
+        Check(!UserSecurity.VerifyPin(user, "1234"), "Un hash truncado no debe reducir la seguridad del PIN.");
+        foreach (var invalid in new[] { " ", "\t", "AA==", Convert.ToBase64String(new byte[33]), "base64 inválido" })
+        {
+            user.PinHash = invalid;
+            Check(!UserSecurity.VerifyPin(user, "1234"), "Debe rechazar hashes dañados sin autenticar.");
+        }
+        user.PinHash = hash;
+        foreach (var invalid in new[] { "AA==", Convert.ToBase64String(new byte[17]), "base64 inválido" })
+        {
+            user.PinSalt = invalid;
+            Check(!UserSecurity.VerifyPin(user, "1234"), "Debe rechazar sales dañadas.");
+        }
+        user.PinSalt = salt;
+        user.Active = false;
+        Check(!UserSecurity.VerifyPin(user, "1234"), "Un usuario inactivo no puede ingresar.");
+    }
+
+    private static void CheckConnectionSettings(string directory)
+    {
+        var path = Path.Combine(directory, "settings.json");
+        var previous = File.ReadAllText(path);
+        var environment = Environment.GetEnvironmentVariable("EDENPOS_MYSQL_CONNECTION");
+        try
+        {
+            Environment.SetEnvironmentVariable("EDENPOS_MYSQL_CONNECTION", null);
+            foreach (var invalid in new[] { "{dañado", "null", "{\"MySqlConnectionStringProtected\":123}", "{\"MySqlConnectionStringProtected\":\"cifrado-inválido\"}",
+                "{\"MySqlConnectionStringProtected\":\"" + Convert.ToBase64String(new byte[64]) + "\"}" })
+            {
+                File.WriteAllText(path, invalid);
+                SqlConnectionFactory.InvalidateCache();
+                var failed = false;
+                try { SqlConnectionFactory.ResolveConnectionString(); }
+                catch (InvalidOperationException) { failed = true; }
+                Check(failed, "No debe usar root como alternativa ante ajustes dañados.");
+                Check(File.ReadAllText(path) == invalid, "Debe conservar la configuración dañada para recuperarla.");
+            }
+            Environment.SetEnvironmentVariable("EDENPOS_MYSQL_CONNECTION",
+                "Server=127.0.0.1;Database=prueba;ConnectionReset=false;IgnoreCommandTransaction=true;PersistSecurityInfo=true;AllowLoadLocalInfile=true");
+            var builder = new MySqlConnectionStringBuilder(SqlConnectionFactory.ResolveConnectionString());
+            Check(builder.ConnectionReset && !builder.IgnoreCommandTransaction && !builder.PersistSecurityInfo && !builder.AllowLoadLocalInfile,
+                "Debe aplicar las protecciones incluso si la cadena intenta desactivarlas.");
+            Check(builder.Database == "prueba", "Debe conservar el destino configurado por el entorno.");
+            Environment.SetEnvironmentVariable("EDENPOS_MYSQL_CONNECTION", null);
+            File.WriteAllText(path, "{}");
+            SqlConnectionFactory.InvalidateCache();
+            Check(new MySqlConnectionStringBuilder(SqlConnectionFactory.ResolveConnectionString()).Database == "edenpos",
+                "El primer inicio sin conexión configurada conserva la compatibilidad local.");
+        }
+        finally
+        {
+            File.WriteAllText(path, previous);
+            Environment.SetEnvironmentVariable("EDENPOS_MYSQL_CONNECTION", environment);
+            SqlConnectionFactory.InvalidateCache();
+        }
+    }
+
+    private static void CheckDatabaseSession()
+    {
+        using (var connection = SqlConnectionFactory.Open())
+        {
+            Execute(connection, "SET SESSION foreign_key_checks = 0; SET SESSION sql_mode = ''; SET @edenpos_test_marker = 123");
+        }
+        using (var connection = SqlConnectionFactory.Open())
+        {
+            using (var command = new MySqlCommand("SELECT @@foreign_key_checks, @@sql_mode, @edenpos_test_marker", connection))
+            using (var reader = command.ExecuteReader())
+            {
+                reader.Read();
+                Check(reader.GetInt32(0) == 1, "Debe recuperar las claves foráneas al reutilizar una conexión.");
+                Check(reader.GetString(1).Contains("STRICT_TRANS_TABLES"), "Debe mantener el modo estricto.");
+                Check(reader.IsDBNull(2), "Las variables de sesión no deben filtrarse entre conexiones.");
+            }
+            using (var transaction = connection.BeginTransaction())
+            {
+                var rejected = false;
+                try { Execute(connection, "SELECT 1"); }
+                catch (InvalidOperationException) { rejected = true; }
+                Check(rejected, "Debe rechazar comandos que omiten la transacción activa.");
+            }
+            using (var transaction = connection.BeginTransaction())
+            using (var command = new MySqlCommand("INSERT INTO cliente (dni, nombre_completo, origen, created_at, updated_at) VALUES ('99999999', 'Temporal', 'Prueba', NOW(), NOW())", connection, transaction))
+                command.ExecuteNonQuery();
+            using (var command = new MySqlCommand("SELECT COUNT(*) FROM cliente WHERE dni = '99999999'", connection))
+                Check(Convert.ToInt32(command.ExecuteScalar()) == 0, "Una transacción no confirmada debe revertir sus cambios.");
+        }
+    }
+
     private static void CheckInventoryDatabase()
     {
         var connectionString = Environment.GetEnvironmentVariable("EDENPOS_TEST_MYSQL_CONNECTION");
@@ -122,7 +268,10 @@ internal static class RegressionChecks
                     Execute(connection, schema.Substring(schema.IndexOf("CREATE TABLE rol", StringComparison.Ordinal)));
                     SeedInventory(connection);
                 }
+                builder.AllowUserVariables = true;
+                builder.MaximumPoolSize = 1;
                 Environment.SetEnvironmentVariable("EDENPOS_MYSQL_CONNECTION", builder.ConnectionString);
+                CheckDatabaseSession();
                 var today = DateTime.Today;
                 var receipts = AppData.Receipts;
                 var paidLines = receipts.Where(r => r.CreatedAt >= today && r.Status == "Pagado").SelectMany(r => r.Lines).ToList();
@@ -147,6 +296,17 @@ internal static class RegressionChecks
                     }
                 Check(actualEntries["p1"] == 4 && actualEntries["o1"] == 2, "Debe excluir entradas antiguas, salidas y tipos con otra capitalización.");
                 Check(actualExits["p1"] == 14 && actualExits["p2"] == 4, "Debe excluir ventas antiguas y reembolsos, conservar medianoche y fechas futuras.");
+                AppData.SaveCustomer("12345678", "Cliente local", "Prueba");
+                Task<DniLookupResult> lookup;
+                var sync = typeof(AppData).GetField("Sync", BindingFlags.Static | BindingFlags.NonPublic).GetValue(null);
+                lock (sync)
+                {
+                    lookup = DniLookupService.LookupAsync("12345678");
+                    Check(!lookup.IsCompleted, "La consulta debe devolver el control aunque la base local esté ocupada.");
+                }
+                var localCustomer = lookup.GetAwaiter().GetResult();
+                Check(localCustomer.Success && localCustomer.FullName == "CLIENTE LOCAL" && localCustomer.Source == "Registro local",
+                    "Debe conservar la búsqueda local sin solicitar acceso al proveedor.");
                 Console.WriteLine("SQL: contadores equivalentes al historial anterior en una base temporal aislada.");
             }
             finally
