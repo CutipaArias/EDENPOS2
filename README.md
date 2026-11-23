@@ -79,6 +79,22 @@ la cadena de conexión intente cambiar esas opciones.
 | `docs/img/` | Capturas de pantalla de la aplicación |
 | `SPEC.md`, `tasks/` | Especificación y plan de trabajo |
 
+## Requerimientos (FD03) y dónde están
+
+| Requerimiento | Pantalla | Código |
+|---|---|---|
+| RF-01 Autenticar usuarios | Inicio de sesión | `LoginForm.cs`, `AppData.AuthenticateUser` |
+| RF-02 Usuarios y roles | Configuración → Usuarios | `UserManagement.cs` |
+| RF-03, RF-04, RF-05 Caja | Turno | `ShiftView.cs`, `AppData.OpenNewShift` / `CloseShift` |
+| RF-07 a RF-10 Visita, casilleros, consumos y cobro | Ventas | `SalesView.cs`, `Dialogs.cs`, `AppData.AddReceipt` |
+| RF-11 Promociones | Cobro y Configuración → Promociones | `Promotions.cs` |
+| RF-12, RF-13, RF-21 Boletas (simuladas) | Recibos y Configuración → Facturación | `ElectronicInvoicing.cs` |
+| RF-14 a RF-16 Inventario y stock mínimo | Inventario | `ProductsView.cs` |
+| RF-17 Reportes | Reportes | `Reports.cs`, `ReportsView.cs` |
+| RF-18 Respaldos | Configuración → Copias de seguridad | `AutoBackup.cs`, `SupabaseReplica.cs` |
+| RNF-03 Seguridad del PIN | — | `Security.cs` (PBKDF2 con sal) |
+| RNF-04 Trazabilidad | Auditoría | `AuditView.cs`, `AppData.RegistrarAuditoria` |
+
 ## Capturas
 
 ![Pantalla de venta](docs/img/Preview.png)
