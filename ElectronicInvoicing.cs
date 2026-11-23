@@ -63,9 +63,16 @@ namespace EdenPOS
         }
     }
 
+    /// <summary>
+    /// Punto de conexión con el servicio de emisión de boletas (patrón Adapter). Hoy lo implementa
+    /// <see cref="EmisorElectronicoStub"/> (simulado); un emisor real de SUNAT/OSE solo debe implementar esta interfaz.
+    /// </summary>
     public interface IEmisorElectronico
     {
+        /// <summary>Envía el comprobante y devuelve si fue aceptado, rechazado o quedó pendiente.</summary>
         Task<ResultadoEnvio> EnviarAsync(Comprobante comprobante);
+
+        /// <summary>Consulta el estado de un comprobante ya enviado, por serie y número.</summary>
         Task<ResultadoEnvio> ConsultarEstadoAsync(string serie, int numero);
     }
 
