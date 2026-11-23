@@ -40,10 +40,19 @@ namespace EdenPOS
     }
 
     // Strategy: cada promoción calcula su propio descuento sobre el mismo contexto.
+    /// <summary>
+    /// Base de las promociones (patrón Strategy). Cada promoción concreta calcula su descuento
+    /// sobre el mismo contexto; en el cobro se aplica solo la de mayor beneficio (RN-05).
+    /// </summary>
     public abstract class Promocion
     {
+        /// <summary>Código estable que se guarda en el recibo (id_promocion_aplicada).</summary>
         public abstract string Id { get; }
+
+        /// <summary>Descuento en soles que corresponde a este contexto; 0 si no aplica.</summary>
         public abstract decimal CalcularDescuento(PromocionContexto contexto);
+
+        /// <summary>Texto corto que se muestra a la cajera en el diálogo de cobro.</summary>
         public abstract string Describir(PromocionContexto contexto);
     }
 
