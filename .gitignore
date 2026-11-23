@@ -26,3 +26,10 @@ errors.log.1
 
 # Configuración local de Claude Code
 .claude/settings.local.json
+
+# Archivos del sistema y de pruebas
+Thumbs.db
+desktop.ini
+TestResults/
+*.tmp
+packages/
