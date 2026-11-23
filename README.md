@@ -74,10 +74,11 @@ la cadena de conexión intente cambiar esas opciones.
 | `devdb/schema.sql` | Esquema MySQL/MariaDB |
 | `devdb/supabase/` | Scripts y guía de la réplica en Supabase |
 | `devdb/seed/`, `devdb/tools/` | Datos de prueba y herramientas de capturas |
-| `devdb/capturas/` | Capturas antes/después del rediseño 
-(`comparativa.html`) |
+| `devdb/capturas/` | Capturas antes/después del rediseño (`comparativa.html`) |
+| `devdb/tests/` | Pruebas de regresión |
 | `docs/img/` | Capturas de pantalla de la aplicación |
 | `SPEC.md`, `tasks/` | Especificación y plan de trabajo |
+
 ## Capturas
 
 ![Pantalla de venta](docs/img/Preview.png)
