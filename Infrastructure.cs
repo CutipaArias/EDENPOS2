@@ -82,26 +82,41 @@ namespace EdenPOS
             lock (Sync)
             using (var connection = SqlConnectionFactory.Open())
             {
-                var existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                using (var command = new MySqlCommand(
-                    "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'usuario'", connection))
+                var existing = ReadColumnNames(connection, "usuario");
+                AddColumnIfMissing(connection, existing, "usuario", "intentos_fallidos", "INT NOT NULL DEFAULT 0");
+                AddColumnIfMissing(connection, existing, "usuario", "bloqueado_en", "DATETIME NULL");
+                // RN-09: observación obligatoria cuando el cierre de caja tiene diferencia (devdb/migraciones/002_rn09_observacion_cierre.sql).
+                existing = ReadColumnNames(connection, "sesion_caja");
+                AddColumnIfMissing(connection, existing, "sesion_caja", "observacion_cierre", "VARCHAR(200) NULL");
+                // Ajuste "Simular rechazo" de la facturación simulada: antes en settings.json, ahora en la base (devdb/migraciones/003).
+                existing = ReadColumnNames(connection, "configuracion");
+                AddColumnIfMissing(connection, existing, "configuracion", "simular_rechazo_comprobantes", "TINYINT(1) NOT NULL DEFAULT 0");
+            }
+        }
+
+        private static HashSet<string> ReadColumnNames(MySqlConnection connection, string table)
+        {
+            var existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            using (var command = new MySqlCommand(
+                "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @tabla", connection))
+            {
+                command.Parameters.AddWithValue("@tabla", table);
                 using (var reader = command.ExecuteReader())
                     while (reader.Read())
                     {
                         var raw = reader.GetValue(0);
                         existing.Add(raw is byte[] ? Encoding.UTF8.GetString((byte[])raw) : Convert.ToString(raw, CultureInfo.InvariantCulture));
                     }
-                AddColumnIfMissing(connection, existing, "intentos_fallidos", "INT NOT NULL DEFAULT 0");
-                AddColumnIfMissing(connection, existing, "bloqueado_en", "DATETIME NULL");
             }
+            return existing;
         }
 
-        private static void AddColumnIfMissing(MySqlConnection connection, HashSet<string> existing, string column, string definition)
+        private static void AddColumnIfMissing(MySqlConnection connection, HashSet<string> existing, string table, string column, string definition)
         {
             if (existing.Contains(column)) return;
             try
             {
-                RunSql(connection, "ALTER TABLE usuario ADD COLUMN " + column + " " + definition);
+                RunSql(connection, "ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition);
             }
             catch (MySqlException ex) when ((int)ex.ErrorCode == 1060)
             {
@@ -111,9 +126,9 @@ namespace EdenPOS
                                             ex.ErrorCode == MySqlErrorCode.DatabaseAccessDenied || (int)ex.ErrorCode == 1227)   // 1142, 1143, 1044, 1227
             {
                 // El usuario de la base no tiene permiso ALTER: mensaje claro (Program lo muestra tal cual) en vez del error genérico.
-                LogError(ex, "Migración RF-01: agregar la columna usuario." + column);
+                LogError(ex, "Migración: agregar la columna " + table + "." + column);
                 throw new InvalidOperationException(
-                    "Falta actualizar la base de datos: ejecute devdb\\migraciones\\001_rf01_bloqueo_usuario.sql con un usuario que tenga permiso ALTER.", ex);
+                    "Falta actualizar la base de datos: ejecute los scripts de devdb\\migraciones (001, 002...) con un usuario que tenga permiso ALTER.", ex);
             }
         }
 
@@ -1467,6 +1482,9 @@ namespace EdenPOS
         public static void RefundReceipt(Receipt receipt, string reason)
         {
             if (receipt == null) throw new ArgumentNullException("receipt");
+            // RN-12: solo la dueña reembolsa y siempre con motivo.
+            if (!AppSession.IsOwner) throw new InvalidOperationException("Solo la dueña puede reembolsar un recibo.");
+            if (!Validation.IsValidRequiredText(reason, 3, 160)) throw new ArgumentException("Ingrese un motivo de 3 a 160 caracteres.");
             lock (Sync)
             {
                 using (var connection = SqlConnectionFactory.Open())
@@ -2121,8 +2139,11 @@ namespace EdenPOS
             }
         }
 
-        public static void CloseShift(string id, decimal closingAmount)
+        // RN-09: si el contado no cuadra con el esperado (calculado aquí, dentro de la transacción), la observación es obligatoria.
+        // Lanza InvalidOperationException sin cerrar nada cuando falta; ShiftView la pide antes, pero otra caja pudo cambiar el esperado.
+        public static void CloseShift(string id, decimal closingAmount, string observation)
         {
+            observation = string.IsNullOrWhiteSpace(observation) ? null : observation.Trim();
             lock (Sync)
             {
                 using (var connection = SqlConnectionFactory.Open())
@@ -2134,21 +2155,27 @@ namespace EdenPOS
                     shift.ClosingAmount = Math.Round(closingAmount, 2);
                     shift.ClosedAt = NowWithoutFraction();
                     shift.IsOpen = false;
+                    var difference = Math.Round(shift.ClosingAmount, 2) - Math.Round(shift.ExpectedAmount, 2);
+                    if (difference != 0m && !Validation.IsValidRequiredText(observation, 3, 200))
+                        throw new InvalidOperationException(
+                            "La caja tiene una diferencia de " + Theme.Money(difference) + " (esperado " + Theme.Money(shift.ExpectedAmount) +
+                            "). Escriba una observación de 3 a 200 caracteres para cerrar el turno.");
+                    shift.ClosingNote = difference == 0m ? null : observation;
                     Execute(connection, transaction,
-                        "UPDATE sesion_caja SET fecha_cierre = @cierre, monto_cierre = @monto, monto_esperado = @esperado, abierta = 0 WHERE id_sesion = @id",
+                        "UPDATE sesion_caja SET fecha_cierre = @cierre, monto_cierre = @monto, monto_esperado = @esperado, observacion_cierre = @obs, abierta = 0 WHERE id_sesion = @id",
                         new Dictionary<string, object>
                         {
                             { "@id", shift.Id },
                             { "@cierre", shift.ClosedAt.Value },
                             { "@monto", shift.ClosingAmount },
-                            { "@esperado", Math.Round(shift.ExpectedAmount, 2) }
+                            { "@esperado", Math.Round(shift.ExpectedAmount, 2) },
+                            { "@obs", shift.ClosingNote }
                         });
-                    var difference = Math.Round(shift.ClosingAmount, 2) - Math.Round(shift.ExpectedAmount, 2);
                     if (difference != 0m)
                         RegistrarAuditoria(connection, transaction, AuditActions.CajaDiferencia,
                             "Turno #" + shift.Number + ": esperado " + Math.Round(shift.ExpectedAmount, 2).ToString("0.00", CultureInfo.InvariantCulture) +
                             ", contado " + Math.Round(shift.ClosingAmount, 2).ToString("0.00", CultureInfo.InvariantCulture) +
-                            ", diferencia " + difference.ToString("0.00", CultureInfo.InvariantCulture));
+                            ", diferencia " + difference.ToString("0.00", CultureInfo.InvariantCulture) + ". Observación: " + shift.ClosingNote);
                     transaction.Commit();
                 }
                 RaiseChanged();
@@ -2234,7 +2261,7 @@ namespace EdenPOS
         }
 
         private const string ShiftColumns =
-            "SELECT id_sesion, numero, empleado, fecha_apertura, fecha_cierre, monto_inicial, monto_cierre, monto_esperado, abierta FROM sesion_caja ";
+            "SELECT id_sesion, numero, empleado, fecha_apertura, fecha_cierre, monto_inicial, monto_cierre, monto_esperado, abierta, observacion_cierre FROM sesion_caja ";
 
         private static List<Shift> ReadShifts(MySqlConnection connection, MySqlTransaction transaction, string clause, Dictionary<string, object> parameters)
         {
@@ -2257,7 +2284,8 @@ namespace EdenPOS
                             OpeningAmount = reader.GetDecimal(5),
                             ClosingAmount = reader.IsDBNull(6) ? 0m : reader.GetDecimal(6),
                             ExpectedAmount = reader.IsDBNull(7) ? 0m : reader.GetDecimal(7),
-                            IsOpen = reader.GetBoolean(8)
+                            IsOpen = reader.GetBoolean(8),
+                            ClosingNote = reader.IsDBNull(9) ? null : reader.GetString(9)
                         });
                     }
                 }

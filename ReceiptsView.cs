@@ -321,7 +321,14 @@ namespace EdenPOS
 
             // Reembolso.
             stack.Add(Gap(Theme.Space.Lg));
-            if (!refunded)
+            if (!refunded && !AppSession.IsOwner)
+            {
+                // RN-12: los trabajadores ven el recibo pero no pueden reembolsarlo.
+                var note = Theme.Banner("Solo la dueña puede reembolsar este recibo.", Tone.Neutral);
+                note.Dock = DockStyle.Top;
+                stack.Add(note);
+            }
+            else if (!refunded)
             {
                 var refund = Theme.Button("Reembolsar", ButtonVariant.Destructive);
                 refund.Width = 160;

@@ -14,6 +14,7 @@ namespace EdenPOS
         public decimal OpeningAmount { get; set; }
         public decimal? ExpectedAmount { get; set; }
         public decimal? CountedAmount { get; set; }
+        public string ClosingNote { get; set; }
         // Contado - esperado; null mientras el turno sigue abierto.
         public decimal? Difference { get { return CountedAmount.HasValue && ExpectedAmount.HasValue ? CountedAmount.Value - ExpectedAmount.Value : (decimal?)null; } }
     }
@@ -103,7 +104,7 @@ namespace EdenPOS
             lock (Sync)
             using (var connection = SqlConnectionFactory.Open())
             using (var command = new MySqlCommand(
-                "SELECT numero, empleado, fecha_apertura, fecha_cierre, monto_inicial, monto_esperado, monto_cierre " +
+                "SELECT numero, empleado, fecha_apertura, fecha_cierre, monto_inicial, monto_esperado, monto_cierre, observacion_cierre " +
                 "FROM sesion_caja WHERE fecha_apertura >= @desde AND fecha_apertura < @hasta ORDER BY fecha_apertura, numero", connection))
             {
                 ReportRange(desde, hasta, command);
@@ -118,7 +119,8 @@ namespace EdenPOS
                             ClosedAt = reader.IsDBNull(3) ? (DateTime?)null : reader.GetDateTime(3),
                             OpeningAmount = reader.GetDecimal(4),
                             ExpectedAmount = reader.IsDBNull(5) ? (decimal?)null : reader.GetDecimal(5),
-                            CountedAmount = reader.IsDBNull(6) ? (decimal?)null : reader.GetDecimal(6)
+                            CountedAmount = reader.IsDBNull(6) ? (decimal?)null : reader.GetDecimal(6),
+                            ClosingNote = reader.IsDBNull(7) ? null : reader.GetString(7)
                         };
                         report.Rows.Add(row);
                         report.OpeningTotal += row.OpeningAmount;

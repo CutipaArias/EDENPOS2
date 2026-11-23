@@ -1204,7 +1204,10 @@ namespace EdenPOS
                     // El estado de bloqueo de las cuentas (RF-01) es local de cada instalación y tampoco se replica: así la réplica funciona igual aunque
                     // el esquema de Supabase aún no tenga esas columnas.
                     var kept = cols.Where(c => !(name == "configuracion" && c.Key == "dni_api_token_protected") &&
-                                               !(name == "usuario" && (c.Key == "intentos_fallidos" || c.Key == "bloqueado_en"))).ToList();
+                                               !(name == "usuario" && (c.Key == "intentos_fallidos" || c.Key == "bloqueado_en")) &&
+                                               // RN-09: por ahora la observación de cierre se queda solo en la base local (Supabase aún puede no tener la columna).
+                                               !(name == "sesion_caja" && c.Key == "observacion_cierre") &&
+                                               !(name == "configuracion" && c.Key == "simular_rechazo_comprobantes")).ToList();
                     var names = kept.Select(c => c.Key).ToArray();
                     var info = new ReplicaTableInfo
                     {

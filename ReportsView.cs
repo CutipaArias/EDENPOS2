@@ -410,6 +410,7 @@ namespace EdenPOS
             ReportUi.Column(shiftGrid, "Esperado", true);
             ReportUi.Column(shiftGrid, "Contado", true);
             ReportUi.Column(shiftGrid, "Diferencia", true);
+            ReportUi.Column(shiftGrid, "Observación", false, 1.6f);
             layout.Controls.Add(ReportUi.Block("Turnos de caja", "Turnos cuya apertura cae en el rango. Un faltante se resalta en rojo y un sobrante en ámbar.", shiftGrid, shiftEmpty), 0, 1);
             return layout;
         }
@@ -433,7 +434,8 @@ namespace EdenPOS
                     Theme.Money(row.OpeningAmount),
                     row.ExpectedAmount.HasValue ? Theme.Money(row.ExpectedAmount.Value) : "—",
                     row.CountedAmount.HasValue ? Theme.Money(row.CountedAmount.Value) : "—",
-                    row.Difference.HasValue ? Theme.Money(row.Difference.Value) : "—");
+                    row.Difference.HasValue ? Theme.Money(row.Difference.Value) : "—",
+                    row.ClosingNote ?? "");
                 if (!row.ClosedAt.HasValue) shiftGrid.Rows[index].Cells[3].Style.ForeColor = Theme.Muted;
                 if (row.Difference.HasValue && row.Difference.Value != 0m)
                 {
@@ -444,7 +446,7 @@ namespace EdenPOS
             }
             if (report.Rows.Count > 0)
             {
-                var index = shiftGrid.Rows.Add("", "Total", "", "", Theme.Money(report.OpeningTotal), Theme.Money(report.ExpectedTotal), Theme.Money(report.CountedTotal), Theme.Money(report.DifferenceTotal));
+                var index = shiftGrid.Rows.Add("", "Total", "", "", Theme.Money(report.OpeningTotal), Theme.Money(report.ExpectedTotal), Theme.Money(report.CountedTotal), Theme.Money(report.DifferenceTotal), "");
                 var totalRow = shiftGrid.Rows[index];
                 totalRow.DefaultCellStyle.Font = ReportUi.BoldBodyFont;
                 totalRow.DefaultCellStyle.BackColor = Theme.SurfaceSunken;
@@ -625,10 +627,10 @@ namespace EdenPOS
             var rows = new List<object[]>();
             if (section == "caja")
             {
-                rows.Add(new object[] { "Número", "Empleado", "Apertura", "Cierre", "Monto inicial", "Esperado", "Contado", "Diferencia" });
+                rows.Add(new object[] { "Número", "Empleado", "Apertura", "Cierre", "Monto inicial", "Esperado", "Contado", "Diferencia", "Observación" });
                 foreach (var r in shiftData.Rows)
-                    rows.Add(new object[] { r.Number, r.Employee, r.OpenedAt, r.ClosedAt.HasValue ? (object)r.ClosedAt.Value : "Abierto", r.OpeningAmount, r.ExpectedAmount, r.CountedAmount, r.Difference });
-                rows.Add(new object[] { "", "Total (esperado, contado y diferencia: solo turnos cerrados)", "", "", shiftData.OpeningTotal, shiftData.ExpectedTotal, shiftData.CountedTotal, shiftData.DifferenceTotal });
+                    rows.Add(new object[] { r.Number, r.Employee, r.OpenedAt, r.ClosedAt.HasValue ? (object)r.ClosedAt.Value : "Abierto", r.OpeningAmount, r.ExpectedAmount, r.CountedAmount, r.Difference, r.ClosingNote ?? "" });
+                rows.Add(new object[] { "", "Total (esperado, contado y diferencia: solo turnos cerrados)", "", "", shiftData.OpeningTotal, shiftData.ExpectedTotal, shiftData.CountedTotal, shiftData.DifferenceTotal, "" });
             }
             else if (section == "ventas")
             {

@@ -132,6 +132,8 @@ namespace EdenPOS
         public decimal ClosingAmount { get; set; }
         public decimal ExpectedAmount { get; set; }
         public bool IsOpen { get; set; }
+        // RN-09: observación del cierre cuando hubo diferencia (null si cuadró).
+        public string ClosingNote { get; set; }
     }
 
     public sealed class CashMovement

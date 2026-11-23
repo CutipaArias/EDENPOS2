@@ -899,7 +899,8 @@ namespace EdenPOS
             var displayName = string.IsNullOrWhiteSpace(customerBox.Text) ? "Público general" : customerBox.Text.Trim();
             SavedTicket ticket;
             savedTicketsById.TryGetValue(loadedSavedTicketId, out ticket);
-            var people = ticket == null ? "" : "   •   Adultos: " + AppData.GetTicketAdultCount(ticket) + "   Niños: " + AppData.GetTicketChildCount(ticket);
+            var people = ticket == null ? "" : "   •   Adultos: " + AppData.GetTicketAdultCount(ticket) + "   Niños: " + AppData.GetTicketChildCount(ticket) +
+                                               "   •   En el local: " + SavedTicketsDialog.ElapsedText(ticket.CreatedAt);   // RF-20
             borrowedLockersLabel.Text = "Cliente: " + displayName + people + "\r\nLlaves: " + (loadedLockerNumbers.Count == 0 ? "Ninguna" : string.Join(", ", loadedLockerNumbers)) + "   • Editar";
             borrowedLockersLabel.Visible = true;
         }

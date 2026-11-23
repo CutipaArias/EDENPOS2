@@ -138,6 +138,9 @@ CREATE TABLE IF NOT EXISTS edenpos.sesion_caja (
   abierta boolean NOT NULL DEFAULT true
 );
 
+-- Observación del cierre de caja con diferencia (RN-09). Por ahora la app NO la replica (trabajo local); la columna queda lista.
+ALTER TABLE edenpos.sesion_caja ADD COLUMN IF NOT EXISTS observacion_cierre varchar(200) NULL;
+
 CREATE TABLE IF NOT EXISTS edenpos.movimiento_caja (
   id_movimiento varchar(32) NOT NULL PRIMARY KEY,
   id_sesion varchar(32) NOT NULL,

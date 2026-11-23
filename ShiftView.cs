@@ -228,9 +228,28 @@ namespace EdenPOS
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Question);
             if (confirm != DialogResult.Yes) return;
+            // RN-09: con diferencia (faltante o sobrante) la observación es obligatoria y queda guardada en el turno.
+            string observation = null;
+            if (difference != 0m)
+            {
+                var label = (difference < 0m ? "Faltante de " + Theme.Money(-difference) : "Sobrante de " + Theme.Money(difference)) + ". Explique el motivo";
+                while (true)
+                {
+                    if (!PromptDialog.AskText(FindForm(), "Observación del cierre", label, out observation, observation ?? "")) return;
+                    if (Validation.IsValidRequiredText(observation, 3, 200)) break;
+                    Theme.Message(FindForm(), Tone.Warning, "Ingrese una observación de 3 a 200 caracteres.", "Observación del cierre");
+                }
+            }
             try
             {
-                AppData.CloseShift(shift.Id, counted);
+                AppData.CloseShift(shift.Id, counted, observation);
+            }
+            catch (InvalidOperationException ex)
+            {
+                // Otra caja cambió el esperado mientras se contaba: el turno sigue abierto.
+                Theme.Message(FindForm(), Tone.Warning, ex.Message, "Cerrar turno");
+                RefreshViewDeferred();
+                return;
             }
             catch (MySqlConnector.MySqlException ex)
             {

@@ -98,6 +98,7 @@ CREATE TABLE sesion_caja (
   monto_cierre DECIMAL(10,2) NULL,
   monto_esperado DECIMAL(10,2) NULL,
   abierta TINYINT(1) NOT NULL DEFAULT 1,
+  observacion_cierre VARCHAR(200) NULL,
   CONSTRAINT fk_sesion_caja_usuario FOREIGN KEY (id_usuario) REFERENCES usuario(id_usuario) ON DELETE SET NULL
 );
 
@@ -198,5 +199,6 @@ CREATE TABLE configuracion (
   promo_sexta_visita_activa TINYINT(1) NOT NULL DEFAULT 1,
   promo_grupal_minimo_personas INT NOT NULL DEFAULT 4,
   promo_grupal_porcentaje DECIMAL(5,2) NOT NULL DEFAULT 10,
+  simular_rechazo_comprobantes TINYINT(1) NOT NULL DEFAULT 0,
   CONSTRAINT chk_configuracion_single_row CHECK (id = 1)
 );

@@ -616,7 +616,7 @@ namespace EdenPOS
             catch (Exception ex)
             {
                 AppData.LogError(ex, "Guardar simulación de rechazo");
-                Msg(Tone.Warning, "No se pudo guardar la opción en la carpeta de datos.", "Facturación electrónica (simulada)");
+                Msg(Tone.Warning, "No se pudo guardar la opción en la base de datos.", "Facturación electrónica (simulada)");
             }
         }
 

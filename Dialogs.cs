@@ -777,8 +777,10 @@ namespace EdenPOS
             grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Customer", HeaderText = "Cliente", FillWeight = 140 });
             grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Adults", HeaderText = "Adultos", Width = 84, AutoSizeMode = DataGridViewAutoSizeColumnMode.None, DefaultCellStyle = { Alignment = DataGridViewContentAlignment.MiddleCenter } });
             grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Children", HeaderText = "Niños", Width = 76, AutoSizeMode = DataGridViewAutoSizeColumnMode.None, DefaultCellStyle = { Alignment = DataGridViewContentAlignment.MiddleCenter } });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Date", HeaderText = "Hora", Width = 110, AutoSizeMode = DataGridViewAutoSizeColumnMode.None });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Total", HeaderText = "Total", Width = 100, AutoSizeMode = DataGridViewAutoSizeColumnMode.None, DefaultCellStyle = { Alignment = DataGridViewContentAlignment.MiddleRight, Font = Theme.Subhead } });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Date", HeaderText = "Ingreso", Width = 100, AutoSizeMode = DataGridViewAutoSizeColumnMode.None });
+            // RF-20: tiempo que lleva la visita (desde que se guardó el ticket) y saldo pendiente de cobro.
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Elapsed", HeaderText = "Tiempo", Width = 96, AutoSizeMode = DataGridViewAutoSizeColumnMode.None, DefaultCellStyle = { Alignment = DataGridViewContentAlignment.MiddleCenter } });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Total", HeaderText = "Por cobrar", Width = 110, AutoSizeMode = DataGridViewAutoSizeColumnMode.None, DefaultCellStyle = { Alignment = DataGridViewContentAlignment.MiddleRight, Font = Theme.Subhead } });
             grid.CellDoubleClick += (s, e) => { if (e.RowIndex >= 0) OpenSelected(); };
             emptyState = Theme.EmptyState("No hay tickets guardados", "Guarde un ticket desde Ventas y aparecerá aquí.");
             emptyState.Visible = false;
@@ -826,6 +828,29 @@ namespace EdenPOS
             CancelButton = cancel;
             AcceptButton = open;
             Theme.FitDialogToWorkingArea(this);
+            // El tiempo transcurrido se actualiza cada 30 s mientras el diálogo está abierto (sin volver a consultar la base).
+            elapsedTimer = new Timer { Interval = 30000 };
+            elapsedTimer.Tick += (s, e) => RefreshElapsed();
+            elapsedTimer.Start();
+            FormClosed += (s, e) => elapsedTimer.Dispose();
+        }
+
+        private readonly Timer elapsedTimer;
+
+        // "45 min", "1 h 05 min". Si el reloj de la PC quedó atrás de la hora guardada, muestra "0 min".
+        internal static string ElapsedText(DateTime since)
+        {
+            var minutes = Math.Max(0, (int)(DateTime.Now - since).TotalMinutes);
+            return minutes < 60 ? minutes + " min" : (minutes / 60) + " h " + (minutes % 60).ToString("00") + " min";
+        }
+
+        private void RefreshElapsed()
+        {
+            foreach (DataGridViewRow row in grid.Rows)
+            {
+                var ticket = row.Tag as SavedTicket;
+                if (ticket != null) row.Cells["Elapsed"].Value = ElapsedText(ticket.CreatedAt);
+            }
         }
 
         private static Control StatBlock(string caption, out Label value)
@@ -876,6 +901,7 @@ namespace EdenPOS
                     AppData.GetTicketAdultCount(ticket),
                     AppData.GetTicketChildCount(ticket),
                     ticket.CreatedAt.ToString("dd/MM HH:mm"),
+                    ElapsedText(ticket.CreatedAt),
                     Theme.Money(ticket.Total));
                 grid.Rows[row].Tag = ticket;
             }

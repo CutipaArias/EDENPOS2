@@ -183,12 +183,9 @@ namespace EdenPOS
         public const decimal DniObligatorioDesde = 700m;
         public const string SerieBoleta = "B001";
         private const string ComprobanteColumnas = "id_comprobante, id_recibo, serie, numero, fecha_emision, estado_envio, codigo_respuesta, intentos, ultimo_intento";
-        private const string SimularRechazoKey = "SimulateInvoiceRejection";
         private static readonly object SendGate = new object();
         private static int retryRunning;
-        private static int simularRechazoCache = -1;
 
-        // "Simular rechazo": se guarda en el settings.json local (no hay columna en la base y no cambia el esquema).
         // Cambió el estado de algún comprobante. Puede dispararse desde un hilo de fondo.
         public static event EventHandler ComprobantesChanged;
 
@@ -202,38 +199,35 @@ namespace EdenPOS
             catch (Exception ex) { LogError(ex, "Actualizar vistas tras enviar comprobante"); }
         }
 
+        // "Simular rechazo" vive en la base (configuracion.simular_rechazo_comprobantes): vale para todas las cajas.
+        // Se lee en cada envío (consulta de una fila); si la base no responde, no se simula rechazo.
         public static bool SimularRechazoComprobantes
         {
             get
             {
-                var cached = simularRechazoCache;
-                if (cached >= 0) return cached == 1;
-                bool value = false;
-                lock (Sync)
+                try
                 {
-                    try
+                    using (var connection = SqlConnectionFactory.Open())
+                    using (var command = new MySqlCommand("SELECT simular_rechazo_comprobantes FROM configuracion WHERE id = 1", connection))
                     {
-                        if (File.Exists(PathFor("settings")))
-                        {
-                            var data = Json.DeserializeObject(File.ReadAllText(PathFor("settings"), Encoding.UTF8)) as Dictionary<string, object>;
-                            object raw;
-                            if (data != null && data.TryGetValue(SimularRechazoKey, out raw) && raw is bool) value = (bool)raw;
-                        }
+                        var raw = command.ExecuteScalar();
+                        return raw != null && raw != DBNull.Value && Convert.ToInt32(raw, CultureInfo.InvariantCulture) != 0;
                     }
-                    catch { }
                 }
-                simularRechazoCache = value ? 1 : 0;
-                return value;
+                catch (Exception ex) when (ex is MySqlException || ex is InvalidOperationException)
+                {
+                    LogError(ex, "Leer 'Simular rechazo' de la base");
+                    return false;
+                }
             }
             set
             {
                 lock (Sync)
+                using (var connection = SqlConnectionFactory.Open())
+                using (var command = new MySqlCommand("UPDATE configuracion SET simular_rechazo_comprobantes = @valor WHERE id = 1", connection))
                 {
-                    // Lectura estricta: si settings.json no se puede leer lanza y no escribe (no se pierden claves como la cadena de conexión).
-                    var data = ReadLocalSettingsStrict();
-                    data[SimularRechazoKey] = value;
-                    Save("settings", data);
-                    simularRechazoCache = value ? 1 : 0;
+                    command.Parameters.AddWithValue("@valor", value ? 1 : 0);
+                    command.ExecuteNonQuery();
                 }
             }
         }
