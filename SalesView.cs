@@ -19,6 +19,9 @@ namespace EdenPOS
         private readonly Label itemCountLabel;
         private readonly TextBox customerBox;
         private readonly TextBox dniBox;
+        private readonly TextBox phoneBox;
+        private readonly CheckBox consentBox;
+        private string customerSource;   // origen del nombre (consulta o registro) para guardarlo en el registro de clientes
         private readonly Button lookupDniButton;
         private readonly Label customerStatus;
         private readonly Button borrowedLockersLabel;
@@ -203,6 +206,23 @@ namespace EdenPOS
             head.Controls.Add(customerField, 0, 3);
             head.SetColumnSpan(customerField, 2);
 
+            // RF-06 / RN-14: teléfono opcional. RNF-09: el DNI y el teléfono solo se guardan con el consentimiento del cliente (Ley N.º 29733).
+            phoneBox = new TextBox { Font = Theme.Body, MaxLength = 15, Tag = "Teléfono (opcional, 9 dígitos)", Dock = DockStyle.Fill };
+            var phoneField = Theme.Field(phoneBox, Theme.Dim.Field);
+            phoneField.Margin = new Padding(0, 0, 0, Theme.Space.Sm);
+            head.Controls.Add(phoneField, 0, 4);
+            head.SetColumnSpan(phoneField, 2);
+
+            consentBox = new CheckBox
+            {
+                Text = "El cliente autoriza el uso de sus datos (Ley 29733)",
+                Font = Theme.Caption, ForeColor = Theme.Ink, BackColor = Theme.Surface,
+                AutoSize = false, Dock = DockStyle.Fill, Height = 34, Cursor = Cursors.Hand,
+                Margin = new Padding(0, 0, 0, Theme.Space.Sm)
+            };
+            head.Controls.Add(consentBox, 0, 5);
+            head.SetColumnSpan(consentBox, 2);
+
             borrowedLockersLabel = Theme.Button("", ButtonVariant.Secondary);
             borrowedLockersLabel.Dock = DockStyle.Fill;
             borrowedLockersLabel.Height = 58;
@@ -214,14 +234,14 @@ namespace EdenPOS
             borrowedLockersLabel.ForeColor = Theme.GreenDark;
             borrowedLockersLabel.FlatAppearance.BorderColor = Theme.Primary;
             borrowedLockersLabel.Click += (s, e) => EditLoadedTicketLockers();
-            head.Controls.Add(borrowedLockersLabel, 0, 4);
+            head.Controls.Add(borrowedLockersLabel, 0, 6);
             head.SetColumnSpan(borrowedLockersLabel, 2);
 
             promoBanner = Theme.Banner("", Tone.Success);
             promoBanner.Dock = DockStyle.Fill;
             promoBanner.Margin = new Padding(0, 0, 0, Theme.Space.Sm);
             promoBanner.Visible = false;
-            head.Controls.Add(promoBanner, 0, 5);
+            head.Controls.Add(promoBanner, 0, 7);
             head.SetColumnSpan(promoBanner, 2);
             ticketLayout.Controls.Add(head, 0, 0);
 
@@ -230,6 +250,7 @@ namespace EdenPOS
             dniLookupTimer = new Timer { Interval = 650 };
             dniLookupTimer.Tick += async (s, e) => { dniLookupTimer.Stop(); await LookupDniAsync(true); };
             dniBox.TextChanged += DniBox_TextChanged;
+            phoneBox.KeyPress += (s, e) => { if (!char.IsControl(e.KeyChar) && !char.IsDigit(e.KeyChar) && e.KeyChar != ' ' && e.KeyChar != '+' && e.KeyChar != '-') e.Handled = true; };
             promoHintTimer = new Timer { Interval = 300 };
             promoHintTimer.Tick += PromoHintTimer_Tick;
             Disposed += (s, e) =>
@@ -338,7 +359,8 @@ namespace EdenPOS
         // en su siguiente ingreso; al cerrar la sesión a mano el carrito se descarta, como siempre.
         private sealed class IdleDraft
         {
-            public string UserId, Customer, Dni, SavedTicketId;
+            public string UserId, Customer, Dni, Phone, CustomerSource, SavedTicketId;
+            public bool Consent;
             public List<ReceiptLine> Lines;
             public List<int> Lockers;
         }
@@ -357,6 +379,9 @@ namespace EdenPOS
                 UserId = user.Id,
                 Customer = customerBox.Text,
                 Dni = dniBox.Text,
+                Phone = phoneBox.Text,
+                Consent = consentBox.Checked,
+                CustomerSource = customerSource,
                 SavedTicketId = loadedSavedTicketId,
                 Lockers = loadedLockerNumbers.ToList(),
                 Lines = cart.Select(x => new ReceiptLine { ProductId = x.ProductId, OptionId = x.OptionId, Name = x.Name, Comment = x.Comment, UnitPrice = x.UnitPrice, Quantity = x.Quantity }).ToList()
@@ -372,6 +397,9 @@ namespace EdenPOS
             customerBox.Text = draft.Customer;
             lastAutoLookup = Validation.IsValidDni(draft.Dni) ? draft.Dni : null;   // el DNI restaurado no dispara la consulta automática
             dniBox.Text = draft.Dni;
+            phoneBox.Text = draft.Phone ?? "";
+            consentBox.Checked = draft.Consent;
+            customerSource = draft.CustomerSource;
             loadedSavedTicketId = draft.SavedTicketId;
             loadedLockerNumbers = draft.Lockers;
         }
@@ -753,6 +781,13 @@ namespace EdenPOS
                 if (result.Success)
                 {
                     customerBox.Text = result.FullName;
+                    customerSource = result.Source == "Registro local" ? null : result.Source;
+                    if (result.DataConsent)
+                    {
+                        // Cliente registrado que ya autorizó el uso de sus datos: se recupera su teléfono y su consentimiento.
+                        consentBox.Checked = true;
+                        if (string.IsNullOrWhiteSpace(phoneBox.Text)) phoneBox.Text = result.Phone ?? "";
+                    }
                     customerStatus.Text = "✓ " + result.Source;
                     customerStatus.ForeColor = Theme.Success;
                     UpdateBorrowedLockersSummary();
@@ -795,11 +830,64 @@ namespace EdenPOS
                 customerBox.Focus();
                 return false;
             }
-            if (dni.Length == 8 && name.Length > 0)
+            // RF-06 / RN-14: teléfono opcional, celular peruano de 9 dígitos.
+            var phone = Validation.NormalizePhone(phoneBox.Text);
+            if (!Validation.IsValidPhone(phoneBox.Text))
             {
-                var existing = AppData.FindCustomer(dni);
-                if (existing == null || !string.Equals(existing.FullName, Validation.NormalizeName(name), StringComparison.OrdinalIgnoreCase))
-                    AppData.SaveCustomer(dni, name, "Ingreso manual");
+                Theme.Message(FindForm(), Tone.Warning, "El teléfono debe ser un celular de 9 dígitos que empiece en 9. Si el cliente no desea darlo, deje el campo vacío.", "Datos del cliente");
+                phoneBox.Focus();
+                return false;
+            }
+            if (phone.Length > 0 && dni.Length == 0)
+            {
+                Theme.Message(FindForm(), Tone.Warning, "Para registrar el teléfono ingrese también el DNI del cliente. Si no lo tiene, deje el teléfono vacío.", "Datos del cliente");
+                dniBox.Focus();
+                return false;
+            }
+            // RNF-09 (Ley N.º 29733): sin consentimiento solo se registra el nombre. RN-11 sigue vigente: si la venta exige DNI, se pide la autorización.
+            if ((dni.Length > 0 || phone.Length > 0) && !consentBox.Checked)
+            {
+                if (cart.Sum(x => x.LineTotal) > AppData.DniObligatorioDesde)
+                {
+                    Theme.Message(FindForm(), Tone.Warning,
+                        "Las ventas mayores a " + Theme.Money(AppData.DniObligatorioDesde) + " requieren el DNI del cliente. Pídale su autorización para usar sus datos " +
+                        "(Ley N.º 29733) y marque la casilla antes de continuar.", "Consentimiento de datos");
+                    consentBox.Focus();
+                    return false;
+                }
+                var answer = MessageBox.Show(FindForm(),
+                    "Para guardar el DNI o el teléfono se necesita la autorización del cliente (Ley N.º 29733).\n\n" +
+                    "¿Desea continuar solo con el nombre? El DNI y el teléfono se borrarán de este ticket.\n" +
+                    "Si el cliente autoriza, elija No y marque la casilla de consentimiento.",
+                    "Consentimiento de datos", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                if (answer != DialogResult.Yes) { consentBox.Focus(); return false; }
+                lastAutoLookup = null;
+                dniBox.Clear();
+                phoneBox.Clear();
+                dni = "";
+                phone = "";
+            }
+            if (dni.Length == 8 && name.Length > 0 && consentBox.Checked)
+            {
+                try
+                {
+                    var existing = AppData.FindCustomer(dni);
+                    if (existing == null || !existing.DataConsent || (existing.Phone ?? "") != phone ||
+                        !string.Equals(existing.FullName, Validation.NormalizeName(name), StringComparison.OrdinalIgnoreCase))
+                        AppData.SaveCustomer(dni, name,
+                            !string.IsNullOrWhiteSpace(customerSource) ? customerSource : existing != null ? existing.Source : "Ingreso manual", phone, true);
+                }
+                catch (ArgumentException ex)
+                {
+                    Theme.Message(FindForm(), Tone.Warning, ex.Message, "Datos del cliente");
+                    return false;
+                }
+                catch (MySqlConnector.MySqlException ex)
+                {
+                    AppData.LogError(ex, "Guardar cliente (base de datos)");
+                    Theme.Message(FindForm(), Tone.Danger, AppData.DescribeDatabaseError(ex), "Datos del cliente");
+                    return false;
+                }
             }
             return true;
         }
@@ -809,6 +897,9 @@ namespace EdenPOS
             cart.Clear();
             customerBox.Clear();
             dniBox.Clear();
+            phoneBox.Clear();
+            consentBox.Checked = false;
+            customerSource = null;
             lastAutoLookup = null;
             customerStatus.Text = "Cliente opcional";
             customerStatus.ForeColor = Theme.Muted;
@@ -878,6 +969,23 @@ namespace EdenPOS
                     cart.Add(new ReceiptLine { ProductId = line.ProductId, OptionId = line.OptionId, Name = line.Name, Comment = line.Comment, UnitPrice = line.UnitPrice, Quantity = line.Quantity });
                 customerBox.Text = dialog.SelectedTicket.CustomerName == "Público general" ? "" : dialog.SelectedTicket.CustomerName;
                 dniBox.Text = dialog.SelectedTicket.CustomerDni ?? "";
+                // RF-06: el teléfono y el consentimiento viven en el registro de clientes (por DNI), no en el ticket guardado.
+                phoneBox.Clear();
+                consentBox.Checked = false;
+                customerSource = null;
+                if (Validation.IsValidDni(dniBox.Text))
+                {
+                    try
+                    {
+                        var registered = AppData.FindCustomer(dniBox.Text);
+                        if (registered != null && registered.DataConsent)
+                        {
+                            consentBox.Checked = true;
+                            phoneBox.Text = registered.Phone ?? "";
+                        }
+                    }
+                    catch (MySqlConnector.MySqlException ex) { AppData.LogError(ex, "Abrir ticket guardado: cliente"); }
+                }
                 lastAutoLookup = Validation.IsValidDni(dniBox.Text) ? dniBox.Text : null;
                 customerStatus.Text = Validation.IsValidDni(dniBox.Text) ? "✓ Ticket recuperado" : "Cliente opcional";
                 customerStatus.ForeColor = Validation.IsValidDni(dniBox.Text) ? Theme.Success : Theme.Muted;

@@ -86,6 +86,7 @@ la cadena de conexión intente cambiar esas opciones.
 | RF-01 Autenticar usuarios | Inicio de sesión | `LoginForm.cs`, `AppData.TryLogin` (bloqueo tras 5 intentos) y cierre por inactividad en `MainForm.cs` |
 | RF-02 Usuarios y roles | Configuración → Usuarios | `UserManagement.cs` |
 | RF-03, RF-04, RF-05 Caja | Turno | `ShiftView.cs`, `AppData.OpenNewShift` / `CloseShift` |
+| RF-06 Registrar cliente (RN-14, RNF-09) | Ventas (DNI, nombre, teléfono y casilla de consentimiento) | `SalesView.cs`, `AppData.SaveCustomer` (DNI y teléfono solo con consentimiento, Ley N.º 29733), `Validation.IsValidPhone` |
 | RF-07 a RF-10 Visita, casilleros, consumos y cobro | Ventas | `SalesView.cs`, `Dialogs.cs`, `AppData.AddReceipt` |
 | RF-11 Promociones | Cobro y Configuración → Promociones | `Promotions.cs` |
 | RF-12, RF-13, RF-21 Boletas (simuladas) | Recibos y Configuración → Facturación | `ElectronicInvoicing.cs` |

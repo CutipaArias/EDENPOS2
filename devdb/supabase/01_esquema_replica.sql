@@ -70,6 +70,11 @@ CREATE TABLE IF NOT EXISTS edenpos.cliente (
   updated_at timestamp without time zone NOT NULL
 );
 
+-- Teléfono y consentimiento de datos del cliente (RF-06, RN-14, RNF-09). Por ahora la app NO los replica (trabajo local); las columnas quedan listas.
+ALTER TABLE edenpos.cliente ADD COLUMN IF NOT EXISTS telefono varchar(15) NULL;
+ALTER TABLE edenpos.cliente ADD COLUMN IF NOT EXISTS consentimiento_datos boolean NOT NULL DEFAULT false;
+ALTER TABLE edenpos.cliente ADD COLUMN IF NOT EXISTS consentimiento_fecha timestamp without time zone NULL;
+
 CREATE TABLE IF NOT EXISTS edenpos.producto (
   id_producto varchar(32) NOT NULL PRIMARY KEY,
   categoria varchar(40) NOT NULL,

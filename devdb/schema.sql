@@ -24,6 +24,9 @@ CREATE TABLE cliente (
   dni CHAR(8) PRIMARY KEY,
   nombre_completo VARCHAR(150) NOT NULL,
   origen VARCHAR(60) NOT NULL,
+  telefono VARCHAR(15) NULL,
+  consentimiento_datos TINYINT(1) NOT NULL DEFAULT 0,
+  consentimiento_fecha DATETIME NULL,
   created_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL
 );

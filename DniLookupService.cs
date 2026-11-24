@@ -16,6 +16,9 @@ namespace EdenPOS
         public string FullName { get; set; }
         public string Source { get; set; }
         public string Message { get; set; }
+        // RF-06: datos del registro local (solo si el cliente ya dio su consentimiento).
+        public string Phone { get; set; }
+        public bool DataConsent { get; set; }
     }
 
     public static class DniLookupService
@@ -42,7 +45,7 @@ namespace EdenPOS
             {
                 local = AppData.FindCustomer(normalized);
                 if (local != null && Validation.IsValidPersonName(local.FullName))
-                    return new DniLookupResult { Success = true, Dni = normalized, FullName = local.FullName, Source = "Registro local", Message = "Cliente encontrado localmente." };
+                    return new DniLookupResult { Success = true, Dni = normalized, FullName = local.FullName, Source = "Registro local", Message = "Cliente encontrado localmente.", Phone = local.DataConsent ? local.Phone : "", DataConsent = local.DataConsent };
                 settings = AppData.Settings;
             }
             catch (MySqlConnector.MySqlException ex)
@@ -71,7 +74,7 @@ namespace EdenPOS
                         if (!response.IsSuccessStatusCode)
                             return Fail(normalized, "El proveedor no respondió correctamente (HTTP " + (int)response.StatusCode + ").");
                         var parsed = ParseResponse(content, normalized);
-                        if (parsed.Success) AppData.SaveCustomer(normalized, parsed.FullName, ProviderName);
+                        // RNF-09: el resultado del proveedor ya no se guarda solo; se registra al cobrar o guardar el ticket si el cliente da su consentimiento.
                         return parsed;
                     }
                 }

@@ -27,6 +27,7 @@ internal static class RegressionChecks
             CheckPinSecurity();
             CheckConnectionSettings(directory);
             CheckInventoryDatabase();
+            CheckCustomerConsentDatabase();
             Console.WriteLine("Correcto: " + checks + " comprobaciones.");
             return 0;
         }
@@ -296,7 +297,7 @@ internal static class RegressionChecks
                     }
                 Check(actualEntries["p1"] == 4 && actualEntries["o1"] == 2, "Debe excluir entradas antiguas, salidas y tipos con otra capitalización.");
                 Check(actualExits["p1"] == 14 && actualExits["p2"] == 4, "Debe excluir ventas antiguas y reembolsos, conservar medianoche y fechas futuras.");
-                AppData.SaveCustomer("12345678", "Cliente local", "Prueba");
+                AppData.SaveCustomer("12345678", "Cliente local", "Prueba", null, true);   // RNF-09: el DNI solo se guarda con consentimiento
                 Task<DniLookupResult> lookup;
                 var sync = typeof(AppData).GetField("Sync", BindingFlags.Static | BindingFlags.NonPublic).GetValue(null);
                 lock (sync)
@@ -308,6 +309,146 @@ internal static class RegressionChecks
                 Check(localCustomer.Success && localCustomer.FullName == "CLIENTE LOCAL" && localCustomer.Source == "Registro local",
                     "Debe conservar la búsqueda local sin solicitar acceso al proveedor.");
                 Console.WriteLine("SQL: contadores equivalentes al historial anterior en una base temporal aislada.");
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("EDENPOS_MYSQL_CONNECTION", originalConnection);
+                MySqlConnection.ClearAllPools();
+                Execute(admin, "DROP DATABASE `" + database + "`");
+            }
+        }
+    }
+
+    // RF-06 / RN-14 / RNF-09: migración de cliente (teléfono y consentimiento), regla de consentimiento en la capa de datos,
+    // validación del teléfono y restauración de copias antiguas sin esas columnas. Usa una base temporal propia que borra al terminar.
+    private static void CheckCustomerConsentDatabase()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("EDENPOS_TEST_MYSQL_CONNECTION");
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            Console.WriteLine("SQL omitido: configure EDENPOS_TEST_MYSQL_CONNECTION para incluir la prueba de clientes (RF-06).");
+            return;
+        }
+        Check(Validation.IsValidPhone("") && Validation.IsValidPhone(null) && Validation.IsValidPhone("987654321"), "RF-06: teléfono vacío o celular de 9 dígitos.");
+        Check(Validation.NormalizePhone("+51 987-654-321") == "987654321", "RF-06: debe aceptar el prefijo +51, espacios y guiones.");
+        foreach (var invalid in new[] { "887654321", "98765432", "9876543210", "abc" })
+            Check(!Validation.IsValidPhone(invalid), "RF-06: debe rechazar el teléfono " + invalid + ".");
+
+        var builder = new MySqlConnectionStringBuilder(connectionString);
+        var database = "edenpos_test_" + Guid.NewGuid().ToString("N");
+        builder.Database = "";
+        var originalConnection = Environment.GetEnvironmentVariable("EDENPOS_MYSQL_CONNECTION");
+        using (var admin = new MySqlConnection(builder.ConnectionString))
+        {
+            admin.Open();
+            Execute(admin, "CREATE DATABASE `" + database + "` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci");
+            try
+            {
+                builder.Database = database;
+                using (var connection = new MySqlConnection(builder.ConnectionString))
+                {
+                    connection.Open();
+                    var schema = File.ReadAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "schema.sql"));
+                    Execute(connection, schema.Substring(schema.IndexOf("CREATE TABLE rol", StringComparison.Ordinal)));
+                    // Base anterior a RF-06: sin las columnas nuevas y con un cliente ya guardado.
+                    Execute(connection, "ALTER TABLE cliente DROP COLUMN telefono, DROP COLUMN consentimiento_datos, DROP COLUMN consentimiento_fecha");
+                    Execute(connection, "INSERT INTO cliente (dni, nombre_completo, origen, created_at, updated_at) VALUES ('11111111', 'CLIENTE ANTIGUO', 'Prueba', NOW(), NOW())");
+                }
+                builder.AllowUserVariables = true;
+                Environment.SetEnvironmentVariable("EDENPOS_MYSQL_CONNECTION", builder.ConnectionString);
+                Func<string, object> scalar = sql =>
+                {
+                    using (var connection = new MySqlConnection(builder.ConnectionString))
+                    {
+                        connection.Open();
+                        using (var command = new MySqlCommand(sql, connection)) return command.ExecuteScalar();
+                    }
+                };
+                Func<Action, string> throws = action => { try { action(); return null; } catch (ArgumentException ex) { return ex.Message; } };
+                var columnsSql = "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'cliente' " +
+                                 "AND COLUMN_NAME IN ('telefono', 'consentimiento_datos', 'consentimiento_fecha')";
+
+                AppData.Initialize();
+                Check(Convert.ToInt32(scalar(columnsSql)) == 3, "RF-06: la migración debe agregar telefono, consentimiento_datos y consentimiento_fecha.");
+                AppData.Initialize();
+                Check(Convert.ToInt32(scalar(columnsSql)) == 3, "RF-06: la migración debe ser idempotente.");
+                var owner = AppData.Users.First(u => u.Role == UserRoles.Owner && u.Active);
+                var login = AppData.TryLogin(owner.Id, "0000");
+                Check(login.Outcome == AppData.LoginOutcome.Success, "RF-06: debe iniciar sesión la dueña de la base de prueba.");
+                AppSession.SignIn(login.User);
+
+                var old = AppData.FindCustomer("11111111");
+                Check(old != null && !old.DataConsent && old.Phone == "" && old.ConsentDate == null, "RF-06: un cliente anterior queda sin consentimiento ni teléfono.");
+
+                var message = throws(() => AppData.SaveCustomer("22222222", "Ana Pérez", "Prueba"));
+                Check(message != null && message.Contains("consentimiento") && AppData.FindCustomer("22222222") == null, "RNF-09: sin consentimiento no se guarda el DNI.");
+                Check(throws(() => AppData.SaveCustomer("22222222", "Ana Pérez", "Prueba", "987654321", false)) != null && AppData.FindCustomer("22222222") == null,
+                    "RNF-09: sin consentimiento no se guarda el teléfono.");
+                message = throws(() => AppData.SaveCustomer("22222222", "Ana Pérez", "Prueba", "123", true));
+                Check(message != null && message.Contains("teléfono") && AppData.FindCustomer("22222222") == null, "RF-06: debe rechazar un teléfono inválido.");
+
+                var start = DateTime.Now.AddSeconds(-2);
+                var saved = AppData.SaveCustomer("22222222", "Ana Pérez", "Prueba", "+51 987 654 321", true);
+                Check(saved.DataConsent && saved.Phone == "987654321" && saved.ConsentDate.HasValue && saved.ConsentDate.Value >= start,
+                    "RF-06: con consentimiento guarda DNI, teléfono normalizado y fecha del consentimiento.");
+                var firstConsent = saved.ConsentDate;
+                System.Threading.Thread.Sleep(1100);
+                var updated = AppData.SaveCustomer("22222222", "Ana Pérez Rojas", "Prueba", null, true);
+                Check(updated.Phone == "987654321" && updated.FullName == "ANA PÉREZ ROJAS" && updated.ConsentDate == firstConsent,
+                    "RF-06: sin teléfono nuevo conserva el anterior y la fecha del consentimiento original.");
+                var cleared = AppData.SaveCustomer("22222222", "Ana Pérez Rojas", "Prueba", "", true);
+                Check(cleared.Phone == "" && scalar("SELECT telefono FROM cliente WHERE dni = '22222222'") is DBNull, "RF-06: un teléfono vacío borra el anterior.");
+                var upgraded = AppData.SaveCustomer("11111111", "Cliente Antiguo", "Prueba", "912345678", true);
+                Check(upgraded.DataConsent && upgraded.ConsentDate.HasValue && upgraded.Phone == "912345678", "RF-06: un cliente anterior puede dar su consentimiento.");
+
+                var lookup = DniLookupService.LookupAsync("11111111").GetAwaiter().GetResult();
+                Check(lookup.Success && lookup.Source == "Registro local" && lookup.DataConsent && lookup.Phone == "912345678",
+                    "RF-06: la consulta local devuelve teléfono y consentimiento.");
+                scalar("INSERT INTO cliente (dni, nombre_completo, origen, telefono, created_at, updated_at) VALUES ('33333333', 'SIN PERMISO', 'Prueba', '955555555', NOW(), NOW())");
+                lookup = DniLookupService.LookupAsync("33333333").GetAwaiter().GetResult();
+                Check(lookup.Success && !lookup.DataConsent && lookup.Phone == "", "RNF-09: sin consentimiento la consulta no muestra el teléfono.");
+
+                if (AppData.OpenShift == null) AppData.OpenNewShift(0m);
+                message = throws(() => AppData.AddReceipt(new List<ReceiptLine> { new ReceiptLine { ProductId = "x", Name = "Prueba", UnitPrice = 800m, Quantity = 1 } },
+                    "Ana", "", "Efectivo", 800m));
+                Check(message != null && message.Contains("DNI"), "RN-11: una venta mayor a S/ 700 sin DNI sigue rechazada.");
+
+                // Copia nueva (con las columnas) y copia "antigua" (sin ellas): ambas deben restaurarse.
+                var current = Path.Combine(Path.GetTempPath(), "EdenPOS-rf06-" + Guid.NewGuid().ToString("N") + ".edenbackup");
+                var legacy = Path.Combine(Path.GetTempPath(), "EdenPOS-rf06-" + Guid.NewGuid().ToString("N") + ".edenbackup");
+                try
+                {
+                    AppData.ExportBackup(current);
+                    File.Copy(current, legacy);
+                    using (var zip = System.IO.Compression.ZipFile.Open(legacy, System.IO.Compression.ZipArchiveMode.Update))
+                    {
+                        var entry = zip.GetEntry("tables/cliente.json");
+                        string json;
+                        using (var reader = new StreamReader(entry.Open(), Encoding.UTF8)) json = reader.ReadToEnd();
+                        var serializer = new System.Web.Script.Serialization.JavaScriptSerializer();
+                        var rows = serializer.Deserialize<List<Dictionary<string, object>>>(json);
+                        Check(rows.Count == 3 && rows.All(r => r.ContainsKey("telefono") && r.ContainsKey("consentimiento_datos") && r.ContainsKey("consentimiento_fecha")),
+                            "RF-06: la copia de seguridad incluye las columnas nuevas de cliente.");
+                        foreach (var row in rows) { row.Remove("telefono"); row.Remove("consentimiento_datos"); row.Remove("consentimiento_fecha"); }
+                        entry.Delete();
+                        using (var writer = new StreamWriter(zip.CreateEntry("tables/cliente.json").Open(), new UTF8Encoding(false))) writer.Write(serializer.Serialize(rows));
+                    }
+                    AppData.ImportBackup(legacy);
+                    var restoredLegacy = AppData.Customers;
+                    Check(restoredLegacy.Count == 3 && restoredLegacy.All(c => !c.DataConsent && c.Phone == "" && c.ConsentDate == null),
+                        "RF-06: una copia antigua sin las columnas se restaura (clientes sin consentimiento).");
+                    AppData.ImportBackup(current);
+                    var restored = AppData.FindCustomer("11111111");
+                    Check(restored != null && restored.DataConsent && restored.Phone == "912345678" && restored.ConsentDate.HasValue,
+                        "RF-06: una copia nueva restaura teléfono y consentimiento.");
+                }
+                finally
+                {
+                    if (File.Exists(current)) File.Delete(current);
+                    if (File.Exists(legacy)) File.Delete(legacy);
+                    AppSession.SignOut();
+                }
+                Console.WriteLine("SQL: registro de clientes con consentimiento (RF-06) en una base temporal aislada.");
             }
             finally
             {

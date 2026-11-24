@@ -131,6 +131,10 @@ namespace EdenPOS
         public string Dni { get; set; }
         public string FullName { get; set; }
         public string Source { get; set; }
+        // RF-06 / RNF-09: teléfono opcional y consentimiento del cliente para guardar sus datos (Ley N.º 29733).
+        public string Phone { get; set; }
+        public bool DataConsent { get; set; }
+        public DateTime? ConsentDate { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
     }

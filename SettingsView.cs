@@ -354,13 +354,13 @@ namespace EdenPOS
             var dangerTitle = CardTitle("Zona de peligro");
             dangerTitle.ForeColor = Theme.Danger;
             danger.Add(dangerTitle, 0);
-            danger.Add(Note("Borra los DNI y nombres de clientes guardados en este equipo. Los recibos existentes no se modifican. Esta acción no se puede deshacer."), Theme.Space.Xs);
+            danger.Add(Note("Borra los DNI, nombres, teléfonos y consentimientos de clientes guardados en este equipo. Los recibos existentes no se modifican. Esta acción no se puede deshacer."), Theme.Space.Xs);
             danger.Add(customersInfo, Theme.Space.Md);
             var clearCustomers = Theme.Button("Borrar clientes locales", ButtonVariant.Destructive);
             clearCustomers.Click += (s, e) =>
             {
                 if (AppData.Customers.Count == 0) { Msg(Tone.Info, "No hay clientes guardados localmente.", "Clientes"); return; }
-                if (MessageBox.Show(FindForm(), "Se eliminarán los DNI y nombres guardados localmente. Los recibos existentes no se modificarán. ¿Continuar?", "Privacidad de clientes", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+                if (MessageBox.Show(FindForm(), "Se eliminarán los DNI, nombres, teléfonos y consentimientos guardados localmente. Los recibos existentes no se modificarán. ¿Continuar?", "Privacidad de clientes", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
                 AppData.ClearCustomers();
                 RefreshView();
             };

@@ -91,6 +91,11 @@ namespace EdenPOS
                 // Ajuste "Simular rechazo" de la facturación simulada: antes en settings.json, ahora en la base (devdb/migraciones/003).
                 existing = ReadColumnNames(connection, "configuracion");
                 AddColumnIfMissing(connection, existing, "configuracion", "simular_rechazo_comprobantes", "TINYINT(1) NOT NULL DEFAULT 0");
+                // RF-06 / RN-14 / RNF-09: teléfono opcional y consentimiento de datos del cliente (devdb/migraciones/004).
+                existing = ReadColumnNames(connection, "cliente");
+                AddColumnIfMissing(connection, existing, "cliente", "telefono", "VARCHAR(15) NULL");
+                AddColumnIfMissing(connection, existing, "cliente", "consentimiento_datos", "TINYINT(1) NOT NULL DEFAULT 0");
+                AddColumnIfMissing(connection, existing, "cliente", "consentimiento_fecha", "DATETIME NULL");
             }
         }
 
@@ -1436,11 +1441,21 @@ namespace EdenPOS
             }
         }
 
-        public static Customer SaveCustomer(string dni, string fullName, string source)
+        public const string CustomerConsentRequiredMessage =
+            "Para guardar el DNI o el teléfono del cliente se necesita su consentimiento (Ley N.º 29733). " +
+            "Sin consentimiento solo se puede registrar su nombre.";
+
+        // RF-06 / RN-14 / RNF-09: el registro de clientes guarda el DNI (clave) y, opcionalmente, el teléfono; ambos exigen el consentimiento
+        // del cliente. phone = null conserva el teléfono ya registrado; "" lo borra. La fecha de consentimiento se conserva si ya lo había dado.
+        public static Customer SaveCustomer(string dni, string fullName, string source, string phone = null, bool dataConsent = false)
         {
             var normalized = Validation.NormalizeDni(dni);
             if (!Validation.IsValidDni(normalized)) throw new ArgumentException("El DNI debe tener 8 dígitos.");
             if (!Validation.IsValidPersonName(fullName)) throw new ArgumentException("El nombre completo no es válido.");
+            if (phone != null && !Validation.IsValidPhone(phone))
+                throw new ArgumentException("El teléfono debe ser un celular de 9 dígitos que empiece en 9, o dejarse vacío.");
+            if (!dataConsent) throw new ArgumentException(CustomerConsentRequiredMessage);
+            var normalizedPhone = phone == null ? null : Validation.NormalizePhone(phone);
             lock (Sync)
             {
                 var now = DateTime.Now;
@@ -1448,15 +1463,21 @@ namespace EdenPOS
                 using (var connection = SqlConnectionFactory.Open())
                 using (var transaction = connection.BeginTransaction())
                 {
-                    // Si el DNI ya existe se actualizan nombre y origen y se conserva la fecha de alta.
+                    // Si el DNI ya existe se actualizan nombre, origen y teléfono y se conserva la fecha de alta.
+                    // consentimiento_fecha va antes que consentimiento_datos: MySQL evalúa las asignaciones en orden y así se lee el valor anterior.
                     Execute(connection, transaction,
-                        "INSERT INTO cliente (dni, nombre_completo, origen, created_at, updated_at) VALUES (@dni, @nombre, @origen, @fecha, @fecha) " +
-                        "ON DUPLICATE KEY UPDATE nombre_completo = VALUES(nombre_completo), origen = VALUES(origen), updated_at = VALUES(updated_at)",
+                        "INSERT INTO cliente (dni, nombre_completo, origen, telefono, consentimiento_datos, consentimiento_fecha, created_at, updated_at) " +
+                        "VALUES (@dni, @nombre, @origen, @telefono, 1, @fecha, @fecha, @fecha) " +
+                        "ON DUPLICATE KEY UPDATE nombre_completo = VALUES(nombre_completo), origen = VALUES(origen), " +
+                        (normalizedPhone == null ? "" : "telefono = VALUES(telefono), ") +
+                        "consentimiento_fecha = IF(consentimiento_datos = 1 AND consentimiento_fecha IS NOT NULL, consentimiento_fecha, VALUES(consentimiento_fecha)), " +
+                        "consentimiento_datos = 1, updated_at = VALUES(updated_at)",
                         new Dictionary<string, object>
                         {
                             { "@dni", normalized },
                             { "@nombre", Clip(Validation.NormalizeName(fullName), 150) },
                             { "@origen", Clip(string.IsNullOrWhiteSpace(source) ? "Manual" : source, 60) },
+                            { "@telefono", string.IsNullOrEmpty(normalizedPhone) ? null : normalizedPhone },
                             { "@fecha", now }
                         });
                     transaction.Commit();
@@ -1485,7 +1506,7 @@ namespace EdenPOS
         private static Customer ReadCustomer(MySqlConnection connection, string dni)
         {
             using (var command = new MySqlCommand(
-                "SELECT dni, nombre_completo, origen, created_at, updated_at FROM cliente WHERE dni = @dni", connection))
+                "SELECT dni, nombre_completo, origen, created_at, updated_at, telefono, consentimiento_datos, consentimiento_fecha FROM cliente WHERE dni = @dni", connection))
             {
                 command.Parameters.AddWithValue("@dni", dni ?? "");
                 using (var reader = command.ExecuteReader())
@@ -1498,7 +1519,7 @@ namespace EdenPOS
             var customers = new List<Customer>();
             using (var connection = SqlConnectionFactory.Open())
             using (var command = new MySqlCommand(
-                "SELECT dni, nombre_completo, origen, created_at, updated_at FROM cliente ORDER BY created_at, dni", connection))
+                "SELECT dni, nombre_completo, origen, created_at, updated_at, telefono, consentimiento_datos, consentimiento_fecha FROM cliente ORDER BY created_at, dni", connection))
             using (var reader = command.ExecuteReader())
             {
                 while (reader.Read()) customers.Add(CustomerFromReader(reader));
@@ -1514,7 +1535,10 @@ namespace EdenPOS
                 FullName = reader.GetString(1),
                 Source = reader.GetString(2),
                 CreatedAt = reader.GetDateTime(3),
-                UpdatedAt = reader.GetDateTime(4)
+                UpdatedAt = reader.GetDateTime(4),
+                Phone = reader.IsDBNull(5) ? "" : reader.GetString(5),
+                DataConsent = !reader.IsDBNull(6) && Convert.ToInt32(reader.GetValue(6), CultureInfo.InvariantCulture) != 0,
+                ConsentDate = reader.IsDBNull(7) ? (DateTime?)null : reader.GetDateTime(7)
             };
         }
 

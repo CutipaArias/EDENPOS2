@@ -1207,6 +1207,8 @@ namespace EdenPOS
                                                !(name == "usuario" && (c.Key == "intentos_fallidos" || c.Key == "bloqueado_en")) &&
                                                // RN-09: por ahora la observación de cierre se queda solo en la base local (Supabase aún puede no tener la columna).
                                                !(name == "sesion_caja" && c.Key == "observacion_cierre") &&
+                                               // RF-06 / RNF-09: por ahora el teléfono y el consentimiento del cliente se quedan solo en la base local (Supabase aún puede no tener las columnas).
+                                               !(name == "cliente" && (c.Key == "telefono" || c.Key == "consentimiento_datos" || c.Key == "consentimiento_fecha")) &&
                                                !(name == "configuracion" && c.Key == "simular_rechazo_comprobantes")).ToList();
                     var names = kept.Select(c => c.Key).ToArray();
                     var info = new ReplicaTableInfo
