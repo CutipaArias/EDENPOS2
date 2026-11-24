@@ -400,6 +400,7 @@ namespace EdenPOS
                     stored.Active = dialog.Product.Active;
                     stored.TrackInventory = dialog.Product.TrackInventory;
                     stored.StockMinimo = dialog.Product.StockMinimo;
+                    stored.CargoPerdida = dialog.Product.CargoPerdida;
                 }
                 if (!TrySaveProducts(products)) return;
                 RefreshView();
@@ -860,6 +861,7 @@ namespace EdenPOS
         private readonly TextBox name;
         private readonly ComboBox category;
         private readonly NumericUpDown price;
+        private readonly NumericUpDown cargoPerdida;
         private readonly CheckBox trackInventoryCheck;
         private readonly NumericUpDown stockMinimo;
         private readonly EdenField stockMinimoField;
@@ -916,7 +918,16 @@ namespace EdenPOS
                 Value = existing == null ? 0 : existing.Price
             };
             EdenField priceField;
-            y = InventoryDialogKit.AddField(this, "Precio (S/)", price, x, y + Theme.Space.Lg, 190, out priceField);
+            var priceTop = y + Theme.Space.Lg;
+            y = InventoryDialogKit.AddField(this, "Precio (S/)", price, x, priceTop, 190, out priceField);
+            // RN-07 / RF-22: lo que se cobra por unidad si el cliente no devuelve este implemento (0 = sin cargo, pero se registra igual).
+            cargoPerdida = new NumericUpDown
+            {
+                Font = Theme.Body, DecimalPlaces = 2, Maximum = AppData.CargoPerdidaMaximo, Minimum = 0, ThousandsSeparator = true,
+                Value = existing == null ? 0 : Math.Max(0, Math.Min(AppData.CargoPerdidaMaximo, existing.CargoPerdida))
+            };
+            EdenField cargoField;
+            InventoryDialogKit.AddField(this, "Cargo por pérdida (S/)", cargoPerdida, x + 190 + Theme.Space.Lg, priceTop, w - 190 - Theme.Space.Lg, out cargoField);
 
             // Grupo de inventario: casilla + mínimo juntos, con su explicación.
             var group = new CardPanel { BackColor = Theme.Canvas, Location = new Point(x, y + Theme.Space.Xl), Size = new Size(w, 168), Padding = new Padding(1) };
@@ -1002,6 +1013,7 @@ namespace EdenPOS
                 Active = existingActive,
                 TrackInventory = trackInventoryCheck.Checked,
                 StockMinimo = trackInventoryCheck.Checked ? (int)stockMinimo.Value : 0,
+                CargoPerdida = Math.Round(cargoPerdida.Value, 2),
                 Stock = existingStock,
                 InitialStock = existingInitialStock
             };

@@ -113,6 +113,8 @@ namespace EdenPOS
                 case AuditActions.ProductoEliminado:
                 case AuditActions.UsuarioEliminado:
                 case AuditActions.ComprobanteRechazado:
+                case AuditActions.LlavePerdida:
+                case AuditActions.ImplementoPerdido:
                     return Tone.Danger;
                 case AuditActions.ReciboReembolsado:
                 case AuditActions.CajaDiferencia:
@@ -120,10 +122,12 @@ namespace EdenPOS
                 case AuditActions.PrecioCambiado:
                 case AuditActions.InventarioAjustado:
                 case AuditActions.CuentaBloqueada:
+                case AuditActions.CargoPerdidaCambiado:
                     return Tone.Warning;
                 case AuditActions.CopiaRestaurada:
                 case AuditActions.DatosImportados:
                 case AuditActions.CuentaDesbloqueada:
+                case AuditActions.LlaveLiberada:
                     return Tone.Info;
                 default:
                     return Tone.Neutral;
@@ -225,6 +229,10 @@ namespace EdenPOS
                 case AuditActions.CuentaDesbloqueada: return "Cuenta desbloqueada";
                 case AuditActions.SesionInactividad: return "Sesión cerrada por inactividad";
                 case AuditActions.InventarioAjustado: return "Inventario ajustado";
+                case AuditActions.LlavePerdida: return "Llave no devuelta";
+                case AuditActions.ImplementoPerdido: return "Implemento no devuelto";
+                case AuditActions.LlaveLiberada: return "Llave liberada";
+                case AuditActions.CargoPerdidaCambiado: return "Cargo por pérdida cambiado";
                 default: return action;
             }
         }

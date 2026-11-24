@@ -91,6 +91,11 @@ namespace EdenPOS
                 // Ajuste "Simular rechazo" de la facturación simulada: antes en settings.json, ahora en la base (devdb/migraciones/003).
                 existing = ReadColumnNames(connection, "configuracion");
                 AddColumnIfMissing(connection, existing, "configuracion", "simular_rechazo_comprobantes", "TINYINT(1) NOT NULL DEFAULT 0");
+                // RF-19 / RN-06 / RN-07 / RF-22: cargo por pérdida de llave y llaves fuera de uso (devdb/migraciones/005_rf19_cargos_perdida.sql).
+                AddColumnIfMissing(connection, existing, "configuracion", "cargo_perdida_llave", "DECIMAL(10,2) NOT NULL DEFAULT 0");
+                AddColumnIfMissing(connection, existing, "configuracion", "llaves_fuera_uso", "VARCHAR(120) NOT NULL DEFAULT ''");
+                existing = ReadColumnNames(connection, "producto");
+                AddColumnIfMissing(connection, existing, "producto", "cargo_perdida", "DECIMAL(10,2) NOT NULL DEFAULT 0");
             }
         }
 
@@ -184,13 +189,14 @@ namespace EdenPOS
             var lockClause = lockRows ? " FOR UPDATE" : "";
             var text = new StringBuilder();
             using (var command = new MySqlCommand(
-                "SELECT id_producto, categoria, nombre, precio, imagen, color_hex, activo, stock_minimo FROM producto ORDER BY id_producto" + lockClause, connection, transaction))
+                "SELECT id_producto, categoria, nombre, precio, imagen, color_hex, activo, stock_minimo, cargo_perdida FROM producto ORDER BY id_producto" + lockClause, connection, transaction))
             using (var reader = command.ExecuteReader())
                 while (reader.Read())
                     text.Append("P|").Append(reader.GetString(0)).Append('|').Append(reader.GetString(1)).Append('|').Append(reader.GetString(2)).Append('|')
                         .Append(reader.GetDecimal(3).ToString("0.00", CultureInfo.InvariantCulture)).Append('|')
                         .Append(reader.IsDBNull(4) ? "" : reader.GetString(4)).Append('|').Append(reader.GetString(5)).Append('|')
-                        .Append(reader.GetBoolean(6) ? "1" : "0").Append('|').Append(reader.GetInt32(7).ToString(CultureInfo.InvariantCulture)).Append('\n');
+                        .Append(reader.GetBoolean(6) ? "1" : "0").Append('|').Append(reader.GetInt32(7).ToString(CultureInfo.InvariantCulture)).Append('|')
+                        .Append(reader.GetDecimal(8).ToString("0.00", CultureInfo.InvariantCulture)).Append('\n');
             using (var command = new MySqlCommand(
                 "SELECT id_variante, id_producto, nombre, orden, precio, stock_minimo FROM producto_variante ORDER BY id_variante" + lockClause, connection, transaction))
             using (var reader = command.ExecuteReader())
@@ -899,8 +905,10 @@ namespace EdenPOS
         // expectedDiscount >= 0: descuento y promoción (expectedPromotionId, null = ninguna) que el diálogo de cobro mostró al cajero. AddReceipt
         // siempre recalcula la promoción dentro de su transacción; si difiere de lo mostrado, cancela para volver a cobrar.
         public static Receipt AddReceipt(List<ReceiptLine> lines, string customer, string customerDni, string method, decimal received, decimal cashAmount = -1m, decimal yapeAmount = -1m,
-            decimal expectedDiscount = -1m, string expectedPromotionId = null, string savedTicketId = null)
+            decimal expectedDiscount = -1m, string expectedPromotionId = null, string savedTicketId = null, LossReport lossReport = null)
         {
+            // lossReport (RF-19): lo que no se devolvió de la visita; obligatorio si el ticket guardado tiene llaves. Las líneas de cargo por pérdida
+            // (AppData.BuildLossChargeLines) van dentro de "lines" y se validan contra la configuración en esta misma transacción.
             if (lines == null || lines.Count == 0) throw new ArgumentException("El comprobante debe tener al menos una línea.");
             foreach (var line in lines)
                 if (line.Quantity <= 0) throw new ArgumentException("La cantidad de \"" + line.Name + "\" debe ser mayor que cero.");
@@ -914,12 +922,14 @@ namespace EdenPOS
                     // FOR UPDATE: el número de recibo y su incremento van en la misma transacción que el INSERT (sin repetidos).
                     int number;
                     string defaultEmployee;
-                    using (var command = new MySqlCommand("SELECT next_receipt_number, employee_name FROM configuracion WHERE id = 1 FOR UPDATE", connection, transaction))
+                    decimal keyCharge;
+                    using (var command = new MySqlCommand("SELECT next_receipt_number, employee_name, cargo_perdida_llave FROM configuracion WHERE id = 1 FOR UPDATE", connection, transaction))
                     using (var reader = command.ExecuteReader())
                     {
                         if (!reader.Read()) throw new InvalidOperationException("La configuración del negocio no está inicializada.");
                         number = reader.GetInt32(0);
                         defaultEmployee = reader.GetString(1);
+                        keyCharge = Math.Min(CargoPerdidaMaximo, Math.Max(0m, reader.GetDecimal(2)));
                     }
                     // Ticket guardado que se está cobrando: se bloquea aquí (si otra caja ya lo cobró o lo eliminó, se aborta sin vender) y se borra
                     // con sus líneas y llaves antes del Commit, de modo que venta y liberación de llaves son atómicas.
@@ -929,8 +939,21 @@ namespace EdenPOS
                         if (!LockSavedTicket(connection, transaction, savedTicketId))
                             throw new SavedTicketUnavailableException();
                     }
+                    var ticketLockers = new List<int>();
+                    if (hasSavedTicket)
+                        using (var command = new MySqlCommand("SELECT numero FROM casillero_llave WHERE id_ticket = @id ORDER BY numero", connection, transaction))
+                        {
+                            command.Parameters.AddWithValue("@id", savedTicketId);
+                            using (var reader = command.ExecuteReader())
+                                while (reader.Read()) ticketLockers.Add(reader.GetInt32(0));
+                        }
                     // Los artículos se leen con FOR UPDATE: el saldo validado es el que se descuenta.
                     var products = LoadProductsFromDb(connection, transaction, true);
+                    // RF-19 / RN-07: cargos por pérdida recalculados con la configuración vigente (no se confía en los montos de la UI).
+                    var chargeLines = lines.Where(IsLossChargeLine).ToList();
+                    var regularLines = lines.Where(x => !IsLossChargeLine(x)).ToList();
+                    if (regularLines.Count == 0) throw new ArgumentException("El comprobante debe tener al menos un artículo además de los cargos por pérdida.");
+                    ValidateLossCharges(lossReport, ticketLockers, regularLines, chargeLines, products, keyCharge);
                     var changes = new List<StockChange>();
                     foreach (var line in lines)
                     {
@@ -944,7 +967,7 @@ namespace EdenPOS
                     }
                     var openShift = ReadOpenShift(connection, transaction);
                     // Promoción recalculada con el historial y la configuración vigentes dentro de esta transacción (RN-03/04/05).
-                    var promotion = EvaluatePromotion(connection, transaction, customerDni, lines);
+                    var promotion = EvaluatePromotion(connection, transaction, customerDni, regularLines);
                     if (expectedDiscount >= 0m &&
                         (promotion.Descuento != Math.Round(expectedDiscount, 2) || (promotion.PromocionId ?? "") != (expectedPromotionId ?? "")))
                         throw new InvalidOperationException("La promoción aplicable cambió mientras se cobraba (" +
@@ -1044,6 +1067,8 @@ namespace EdenPOS
                     receipt.Comprobante = CrearComprobante(connection, transaction, receipt);
                     PersistStockChanges(connection, transaction, changes);
                     PersistNextReceiptNumber(connection, transaction, number + 1);
+                    // RN-06: las llaves devueltas se liberan al borrar el ticket; las no devueltas pasan a "fuera de uso".
+                    RegisterLosses(connection, transaction, receipt, lossReport, products, keyCharge);
                     if (hasSavedTicket)
                     {
                         DeleteTicketChildren(connection, transaction, savedTicketId);
@@ -1101,6 +1126,7 @@ namespace EdenPOS
                     using (var connection = SqlConnectionFactory.Open())
                     using (var transaction = connection.BeginTransaction())
                     {
+                        EnsureLockersInService(connection, transaction, selectedLockers);   // RN-06: no se asignan llaves no devueltas
                         var duplicated = FindOccupiedLocker(connection, transaction, null, selectedLockers);
                         if (duplicated > 0) throw new InvalidOperationException("El candado " + duplicated + " ya está ocupado. Seleccione otro.");
                         Execute(connection, transaction,
@@ -1148,6 +1174,7 @@ namespace EdenPOS
                         LockSavedTicket(connection, transaction, id);
                         ticket = LoadSavedTicketsFromDb(connection, transaction, id).FirstOrDefault();
                         if (ticket == null) throw new InvalidOperationException("El ticket guardado ya no existe.");
+                        EnsureLockersInService(connection, transaction, selectedLockers);   // RN-06: no se asignan llaves no devueltas
                         var duplicated = FindOccupiedLocker(connection, transaction, id, selectedLockers);
                         if (duplicated > 0) throw new InvalidOperationException("La llave " + duplicated + " ya está ocupada. Seleccione otra.");
 
@@ -1224,6 +1251,7 @@ namespace EdenPOS
                         var ticket = LoadSavedTicketsFromDb(connection, transaction, id).FirstOrDefault();
                         if (ticket == null) throw new InvalidOperationException("El ticket guardado ya no existe.");
 
+                        EnsureLockersInService(connection, transaction, selectedLockers);   // RN-06: no se asignan llaves no devueltas
                         var duplicated = FindOccupiedLocker(connection, transaction, id, selectedLockers);
                         if (duplicated > 0) throw new InvalidOperationException("La llave " + duplicated + " ya está ocupada. Seleccione otra.");
 
@@ -1675,6 +1703,8 @@ namespace EdenPOS
         {
             var settings = ReadConfiguration(connection, transaction);
             var dni = Validation.NormalizeDni(customerDni);
+            // Los cargos por pérdida (RN-07) no son consumo: no cuentan como SAUNA, ni como personas, ni suman al total del descuento grupal.
+            lines = lines.Where(x => !IsLossChargeLine(x)).ToList();
             var context = new PromocionContexto
             {
                 ClienteDni = dni,
@@ -1833,7 +1863,7 @@ namespace EdenPOS
             var lockClause = forUpdate ? " FOR UPDATE" : "";
             {
                 using (var command = new MySqlCommand(
-                    "SELECT id_producto, categoria, nombre, precio, imagen, color_hex, activo, controla_inventario, stock, stock_inicial, stock_minimo " +
+                    "SELECT id_producto, categoria, nombre, precio, imagen, color_hex, activo, controla_inventario, stock, stock_inicial, stock_minimo, cargo_perdida " +
                     "FROM producto ORDER BY categoria, nombre" + lockClause, connection, transaction))
                 using (var reader = command.ExecuteReader())
                 {
@@ -1852,6 +1882,7 @@ namespace EdenPOS
                             Stock = reader.GetInt32(8),
                             InitialStock = reader.GetInt32(9),
                             StockMinimo = reader.GetInt32(10),
+                            CargoPerdida = reader.GetDecimal(11),
                             Options = new List<ProductOption>()
                         };
                         products.Add(product);
@@ -1951,6 +1982,8 @@ namespace EdenPOS
                     throw new ArgumentException("La categoría de \"" + product.Name + "\" no puede superar 40 caracteres.");
                 if ((product.ImageFile ?? "").Length > 255)
                     throw new ArgumentException("La ruta de imagen de \"" + product.Name + "\" es demasiado larga.");
+                if (product.CargoPerdida < 0m || product.CargoPerdida > CargoPerdidaMaximo)
+                    throw new ArgumentException("El cargo por pérdida de \"" + product.Name + "\" debe estar entre 0 y " + CargoPerdidaMaximo.ToString("0", CultureInfo.InvariantCulture) + ".");
                 if (!seenIds.Add(product.Id)) throw new InvalidOperationException("Hay artículos repetidos en la lista.");
                 if (!seenNames.Add((product.Category ?? "") + "\u0001" + product.Name))
                     throw new InvalidOperationException("Ya existe un artículo \"" + product.Name + "\" en la categoría " + (product.Category ?? "") + ".");
@@ -1976,9 +2009,14 @@ namespace EdenPOS
                     }
                     var existingProducts = new Dictionary<string, decimal>();
                     var existingOptions = new Dictionary<string, decimal>();
-                    using (var command = new MySqlCommand("SELECT id_producto, precio FROM producto", connection, transaction))
+                    var existingCargos = new Dictionary<string, decimal>();
+                    using (var command = new MySqlCommand("SELECT id_producto, precio, cargo_perdida FROM producto", connection, transaction))
                     using (var reader = command.ExecuteReader())
-                        while (reader.Read()) existingProducts[reader.GetString(0)] = reader.GetDecimal(1);
+                        while (reader.Read())
+                        {
+                            existingProducts[reader.GetString(0)] = reader.GetDecimal(1);
+                            existingCargos[reader.GetString(0)] = reader.GetDecimal(2);
+                        }
                     using (var command = new MySqlCommand("SELECT id_variante, precio FROM producto_variante", connection, transaction))
                     using (var reader = command.ExecuteReader())
                         while (reader.Read()) existingOptions[reader.GetString(0)] = reader.GetDecimal(1);
@@ -2002,11 +2040,18 @@ namespace EdenPOS
                             { "@controla", product.TrackInventory },
                             { "@stock", product.Stock },
                             { "@inicial", product.InitialStock },
-                            { "@minimo", Math.Max(0, product.StockMinimo) }
+                            { "@minimo", Math.Max(0, product.StockMinimo) },
+                            { "@cargo", Math.Round(product.CargoPerdida, 2) }
                         };
                         decimal previousPrice;
                         if (existingProducts.TryGetValue(product.Id, out previousPrice))
                         {
+                            // RF-22: el cambio del cargo por pérdida del implemento también queda en Auditoría.
+                            decimal previousCargo;
+                            var newCargo = Math.Round(product.CargoPerdida, 2);
+                            if (existingCargos.TryGetValue(product.Id, out previousCargo) && previousCargo != newCargo)
+                                RegistrarAuditoria(connection, transaction, AuditActions.CargoPerdidaCambiado,
+                                    "Cargo por pérdida de " + product.Name + ": " + previousCargo.ToString("0.00", CultureInfo.InvariantCulture) + " -> " + newCargo.ToString("0.00", CultureInfo.InvariantCulture));
                             // Con variantes el precio del artículo es derivado (el mínimo de ellas): el cambio se audita en la variante.
                             var newPrice = Math.Round(product.Price, 2);
                             if (newPrice != previousPrice && (product.Options == null || product.Options.Count == 0))
@@ -2015,12 +2060,12 @@ namespace EdenPOS
                             // stock y stock_inicial de filas existentes NO se escriben aquí: solo cambian por entradas, ventas y reembolsos (PersistStockChanges).
                             Execute(connection, transaction,
                                 "UPDATE producto SET categoria = @categoria, nombre = @nombre, precio = @precio, imagen = @imagen, color_hex = @color, " +
-                                "activo = @activo, controla_inventario = @controla, stock_minimo = @minimo WHERE id_producto = @id", values);
+                                "activo = @activo, controla_inventario = @controla, stock_minimo = @minimo, cargo_perdida = @cargo WHERE id_producto = @id", values);
                         }
                         else
                             Execute(connection, transaction,
-                                "INSERT INTO producto (id_producto, categoria, nombre, precio, imagen, color_hex, activo, controla_inventario, stock, stock_inicial, stock_minimo) " +
-                                "VALUES (@id, @categoria, @nombre, @precio, @imagen, @color, @activo, @controla, @stock, @inicial, @minimo)", values);
+                                "INSERT INTO producto (id_producto, categoria, nombre, precio, imagen, color_hex, activo, controla_inventario, stock, stock_inicial, stock_minimo, cargo_perdida) " +
+                                "VALUES (@id, @categoria, @nombre, @precio, @imagen, @color, @activo, @controla, @stock, @inicial, @minimo, @cargo)", values);
                     }
 
                     foreach (var product in products)

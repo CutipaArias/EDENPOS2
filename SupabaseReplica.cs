@@ -1207,7 +1207,11 @@ namespace EdenPOS
                                                !(name == "usuario" && (c.Key == "intentos_fallidos" || c.Key == "bloqueado_en")) &&
                                                // RN-09: por ahora la observación de cierre se queda solo en la base local (Supabase aún puede no tener la columna).
                                                !(name == "sesion_caja" && c.Key == "observacion_cierre") &&
-                                               !(name == "configuracion" && c.Key == "simular_rechazo_comprobantes")).ToList();
+                                               !(name == "configuracion" && c.Key == "simular_rechazo_comprobantes") &&
+                                               // RF-19 / RN-06 / RN-07: cargos por pérdida y llaves fuera de uso, por ahora solo en la base local
+                                               // (Supabase aún puede no tener las columnas; devdb/supabase/01_esquema_replica.sql ya las agrega).
+                                               !(name == "configuracion" && (c.Key == "cargo_perdida_llave" || c.Key == "llaves_fuera_uso")) &&
+                                               !(name == "producto" && c.Key == "cargo_perdida")).ToList();
                     var names = kept.Select(c => c.Key).ToArray();
                     var info = new ReplicaTableInfo
                     {
