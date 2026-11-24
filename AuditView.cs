@@ -118,6 +118,7 @@ namespace EdenPOS
                 case AuditActions.CajaDiferencia:
                 case AuditActions.UsuarioDesactivado:
                 case AuditActions.PrecioCambiado:
+                case AuditActions.InventarioAjustado:
                 case AuditActions.CuentaBloqueada:
                     return Tone.Warning;
                 case AuditActions.CopiaRestaurada:
@@ -223,6 +224,7 @@ namespace EdenPOS
                 case AuditActions.CuentaBloqueada: return "Cuenta bloqueada";
                 case AuditActions.CuentaDesbloqueada: return "Cuenta desbloqueada";
                 case AuditActions.SesionInactividad: return "Sesión cerrada por inactividad";
+                case AuditActions.InventarioAjustado: return "Inventario ajustado";
                 default: return action;
             }
         }

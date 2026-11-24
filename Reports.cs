@@ -70,6 +70,10 @@ namespace EdenPOS
         public int Entries { get; set; }
         public int Sales { get; set; }
         public int Refunds { get; set; }
+        // RF-15: unidades dadas de baja por pérdida y por consumo interno.
+        public int Losses { get; set; }
+        public int InternalUse { get; set; }
+        // Ajustes por conteo (con signo: + sobró, - faltó) y cualquier tipo desconocido.
         public int Other { get; set; }
     }
 
@@ -214,7 +218,7 @@ namespace EdenPOS
             return report;
         }
 
-        // Movimientos del rango por producto/variante (tipos reales: Entrada, Venta, Reembolso; cualquier otro va a "Otros")
+        // Movimientos del rango por producto/variante (Entrada, Venta, Reembolso, Pérdida, Consumo interno; Ajuste y cualquier otro van a "Other")
         // y productos/variantes con control de inventario en o bajo su stock mínimo (> 0).
         public static InventoryReport GetInventoryReport(DateTime desde, DateTime hasta)
         {
@@ -224,20 +228,28 @@ namespace EdenPOS
             {
                 using (var command = new MySqlCommand(
                     "SELECT MAX(producto_nombre), " +
-                    "COALESCE(SUM(CASE WHEN tipo = 'Entrada' THEN cantidad ELSE 0 END), 0), " +
-                    "COALESCE(SUM(CASE WHEN tipo = 'Venta' THEN cantidad ELSE 0 END), 0), " +
-                    "COALESCE(SUM(CASE WHEN tipo = 'Reembolso' THEN cantidad ELSE 0 END), 0), " +
-                    "COALESCE(SUM(CASE WHEN tipo NOT IN ('Entrada', 'Venta', 'Reembolso') THEN cantidad ELSE 0 END), 0) " +
+                    "COALESCE(SUM(CASE WHEN BINARY tipo = @entrada THEN cantidad ELSE 0 END), 0), " +
+                    "COALESCE(SUM(CASE WHEN BINARY tipo = @venta THEN cantidad ELSE 0 END), 0), " +
+                    "COALESCE(SUM(CASE WHEN BINARY tipo = @reembolso THEN cantidad ELSE 0 END), 0), " +
+                    "COALESCE(SUM(CASE WHEN BINARY tipo = @perdida THEN cantidad ELSE 0 END), 0), " +
+                    "COALESCE(SUM(CASE WHEN BINARY tipo = @consumo THEN cantidad ELSE 0 END), 0), " +
+                    "COALESCE(SUM(CASE WHEN BINARY tipo NOT IN (@entrada, @venta, @reembolso, @perdida, @consumo) THEN cantidad ELSE 0 END), 0) " +
                     "FROM movimiento_inventario WHERE created_at >= @desde AND created_at < @hasta " +
                     "GROUP BY COALESCE(id_variante, id_producto) ORDER BY 1", connection))
                 {
                     ReportRange(desde, hasta, command);
+                    command.Parameters.AddWithValue("@entrada", InventoryMovementTypes.Entrada);
+                    command.Parameters.AddWithValue("@venta", InventoryMovementTypes.Venta);
+                    command.Parameters.AddWithValue("@reembolso", InventoryMovementTypes.Reembolso);
+                    command.Parameters.AddWithValue("@perdida", InventoryMovementTypes.Perdida);
+                    command.Parameters.AddWithValue("@consumo", InventoryMovementTypes.ConsumoInterno);
                     using (var reader = command.ExecuteReader())
                         while (reader.Read())
                             report.Movements.Add(new InventoryMovementRow
                             {
                                 Name = reader.GetString(0), Entries = Convert.ToInt32(reader.GetValue(1)), Sales = Convert.ToInt32(reader.GetValue(2)),
-                                Refunds = Convert.ToInt32(reader.GetValue(3)), Other = Convert.ToInt32(reader.GetValue(4))
+                                Refunds = Convert.ToInt32(reader.GetValue(3)), Losses = Convert.ToInt32(reader.GetValue(4)),
+                                InternalUse = Convert.ToInt32(reader.GetValue(5)), Other = Convert.ToInt32(reader.GetValue(6))
                             });
                 }
 

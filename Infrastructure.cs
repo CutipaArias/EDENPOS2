@@ -800,6 +800,65 @@ namespace EdenPOS
             }
         }
 
+        // RF-15: salida de stock que no es venta (Pérdida, Consumo interno) o ajuste por conteo físico (Ajuste: quantity = stock contado).
+        // El motivo es obligatorio. Todo en una transacción con las filas de producto bloqueadas (FOR UPDATE), así dos cajas no se pisan
+        // el stock; también queda en Auditoría. Devuelve el stock nuevo.
+        public static int AddInventoryAdjustment(string productId, string optionId, string type, int quantity, string reason)
+        {
+            if (type != InventoryMovementTypes.Perdida && type != InventoryMovementTypes.ConsumoInterno && type != InventoryMovementTypes.Ajuste)
+                throw new ArgumentException("Tipo de movimiento no válido.");
+            if (!Validation.IsValidRequiredText(reason, 3, 150)) throw new ArgumentException("Ingrese un motivo de 3 a 150 caracteres.");
+            if (type == InventoryMovementTypes.Ajuste)
+            {
+                if (quantity < 0 || quantity > 1000000) throw new ArgumentException("El stock contado debe ser 0 o mayor.");
+            }
+            else if (quantity <= 0 || quantity > 1000000) throw new ArgumentException("La cantidad debe ser mayor que cero.");
+            reason = reason.Trim();
+            int newStock;
+            lock (Sync)
+            {
+                using (var connection = SqlConnectionFactory.Open())
+                using (var transaction = connection.BeginTransaction())
+                {
+                    var products = LoadProductsFromDb(connection, transaction, true);
+                    var product = products.FirstOrDefault(x => x.Id == productId);
+                    if (product == null) throw new InvalidOperationException("El artículo ya no existe.");
+                    ProductOption option = null;
+                    if (!string.IsNullOrWhiteSpace(optionId))
+                    {
+                        option = (product.Options ?? new List<ProductOption>()).FirstOrDefault(x => x.Id == optionId);
+                        if (option == null) throw new InvalidOperationException("La variante ya no existe.");
+                    }
+                    var tracks = option != null ? option.TrackInventory : product.TrackInventory;
+                    if (!tracks) throw new InvalidOperationException("Este artículo no controla inventario.");
+                    var previous = option != null ? option.Stock : product.Stock;
+                    int movementQuantity;
+                    if (type == InventoryMovementTypes.Ajuste)
+                    {
+                        if (quantity == previous) throw new InvalidOperationException("El stock contado es igual al del sistema: no hay nada que ajustar.");
+                        newStock = quantity;
+                        movementQuantity = quantity - previous;
+                    }
+                    else
+                    {
+                        if (quantity > previous) throw new InvalidOperationException("No hay saldo suficiente. Disponible: " + previous + ".");
+                        newStock = previous - quantity;
+                        movementQuantity = quantity;
+                    }
+                    if (option != null) option.Stock = newStock; else product.Stock = newStock;
+                    var movement = option != null
+                        ? NewInventoryMovement(product, option, type, movementQuantity, previous, reason, null)
+                        : NewInventoryMovement(product, type, movementQuantity, previous, reason, null);
+                    PersistStockChanges(connection, transaction, new List<StockChange> { new StockChange(product, option, movement) });
+                    RegistrarAuditoria(connection, transaction, AuditActions.InventarioAjustado,
+                        type + " de " + movement.ProductName + ": stock " + previous + " → " + newStock + ". Motivo: " + reason);
+                    transaction.Commit();
+                }
+                RaiseChanged();
+            }
+            return newStock;
+        }
+
         public static void DeleteProduct(string productId)
         {
             lock (Sync)

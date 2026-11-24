@@ -557,7 +557,9 @@ namespace EdenPOS
             ReportUi.Column(movementGrid, "Entradas", true);
             ReportUi.Column(movementGrid, "Salidas por venta", true);
             ReportUi.Column(movementGrid, "Reembolsos (devueltos)", true);
-            ReportUi.Column(movementGrid, "Otros ajustes", true);
+            ReportUi.Column(movementGrid, "Pérdidas", true);
+            ReportUi.Column(movementGrid, "Consumo interno", true);
+            ReportUi.Column(movementGrid, "Ajustes por conteo (±)", true);
             layout.Controls.Add(ReportUi.Block("Movimientos del rango", "Unidades por producto o variante, según el tipo de movimiento.", movementGrid, movementEmpty), 0, 1);
 
             ReportUi.Column(lowStockGrid, "Producto o variante", false, 2.2f);
@@ -577,7 +579,8 @@ namespace EdenPOS
             {
                 entries += row.Entries; sold += row.Sales;
                 movementGrid.Rows.Add(row.Name, row.Entries.ToString(CultureInfo.InvariantCulture), row.Sales.ToString(CultureInfo.InvariantCulture),
-                    row.Refunds.ToString(CultureInfo.InvariantCulture), row.Other.ToString(CultureInfo.InvariantCulture));
+                    row.Refunds.ToString(CultureInfo.InvariantCulture), row.Losses.ToString(CultureInfo.InvariantCulture),
+                    row.InternalUse.ToString(CultureInfo.InvariantCulture), row.Other.ToString("+0;-0;0", CultureInfo.InvariantCulture));
             }
             ReportUi.Show(movementGrid, movementEmpty, report.Movements.Count > 0);
             movementGrid.ClearSelection();
@@ -652,8 +655,8 @@ namespace EdenPOS
             }
             else
             {
-                rows.Add(new object[] { "Producto o variante", "Entradas", "Salidas por venta", "Reembolsos (devueltos)", "Otros ajustes" });
-                foreach (var r in inventoryData.Movements) rows.Add(new object[] { r.Name, r.Entries, r.Sales, r.Refunds, r.Other });
+                rows.Add(new object[] { "Producto o variante", "Entradas", "Salidas por venta", "Reembolsos (devueltos)", "Pérdidas", "Consumo interno", "Ajustes por conteo (±)" });
+                foreach (var r in inventoryData.Movements) rows.Add(new object[] { r.Name, r.Entries, r.Sales, r.Refunds, r.Losses, r.InternalUse, r.Other });
                 rows.Add(new object[0]);
                 rows.Add(new object[] { "En stock mínimo o por debajo", "Stock actual", "Stock mínimo" });
                 foreach (var r in inventoryData.LowStock) rows.Add(new object[] { r.Name, r.Stock, r.Minimum });

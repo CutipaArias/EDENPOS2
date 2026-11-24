@@ -18,6 +18,7 @@ namespace EdenPOS
         private readonly ComboBox category;
         private readonly EmptyState emptyState;
         private readonly Button entryButton;
+        private readonly Button exitButton;
         private readonly Button addVariantButton;
         private readonly Button editButton;
         private readonly Button deleteButton;
@@ -49,6 +50,7 @@ namespace EdenPOS
             // Acciones. Cabecera: lo principal del contexto. Barra: filtros a la izquierda, acciones sobre la selección a la derecha.
             var add = Theme.Button("Nuevo artículo", ButtonVariant.Primary); add.Click += (s, e) => AddProduct();
             entryButton = Theme.Button("Registrar entrada", ButtonVariant.Secondary); entryButton.Click += (s, e) => RegisterEntry();
+            exitButton = Theme.Button("Registrar salida", ButtonVariant.Secondary); exitButton.Click += (s, e) => RegisterAdjustment();
             addVariantButton = Theme.Button("Nueva variante", ButtonVariant.Secondary); addVariantButton.Width = 150; addVariantButton.Click += (s, e) => AddVariant();
             editButton = Theme.Button("Editar", ButtonVariant.Secondary); editButton.Width = 150; editButton.Click += (s, e) => EditSelected();
             deleteButton = Theme.Button("Eliminar", ButtonVariant.Destructive); deleteButton.Width = 140; deleteButton.Click += (s, e) => DeleteSelected();
@@ -56,6 +58,7 @@ namespace EdenPOS
             header = new ScreenHeader { Title = "Inventario" };
             header.AddAction(add);
             header.AddAction(entryButton);
+            header.AddAction(exitButton);
 
             category = Theme.Combo();
             category.Size = new Size(230, Theme.Dim.Field);
@@ -288,6 +291,8 @@ namespace EdenPOS
             var item = SelectedItem();
             var hasSelection = item != null;
             entryButton.Enabled = hasSelection;
+            // RF-15: la salida (pérdida, consumo interno, ajuste) solo aplica a artículos que controlan inventario.
+            exitButton.Enabled = hasSelection && (item.IsOption ? item.Option.TrackInventory : item.Product.TrackInventory);
             addVariantButton.Enabled = hasSelection;
             editButton.Enabled = hasSelection;
             deleteButton.Enabled = hasSelection;
@@ -501,6 +506,39 @@ namespace EdenPOS
             }
         }
 
+        // RF-15: pérdida, consumo interno o ajuste por conteo físico, siempre con motivo.
+        private void RegisterAdjustment()
+        {
+            var item = SelectedItem();
+            var selected = item == null ? null : item.Product;
+            if (selected == null) { Theme.Message(FindForm(), Tone.Info, "Seleccione primero un producto.", "Inventario"); return; }
+            var displayName = item.IsOption ? selected.Name + " - " + item.Option.Name : selected.Name;
+            var currentStock = item.IsOption ? item.Option.Stock : selected.Stock;
+            using (var dialog = new InventoryAdjustmentDialog(displayName, currentStock))
+            {
+                if (dialog.ShowDialog(FindForm()) != DialogResult.OK) return;
+                try
+                {
+                    AppData.AddInventoryAdjustment(selected.Id, item.IsOption ? item.Option.Id : null, dialog.MovementType, dialog.Quantity, dialog.Reason);
+                }
+                catch (Exception ex) when (ex is InvalidOperationException || ex is ArgumentException)
+                {
+                    Theme.Message(FindForm(), Tone.Warning, ex.Message, "No se pudo registrar la salida");
+                    RefreshAfterFailure();
+                    return;
+                }
+                catch (MySqlConnector.MySqlException ex)
+                {
+                    AppData.LogError(ex, "Registrar salida de inventario");
+                    Theme.Message(FindForm(), Tone.Danger, AppData.DescribeDatabaseError(ex), "No se pudo registrar la salida");
+                    RefreshAfterFailure();
+                    return;
+                }
+                RefreshView();
+                SelectItem(selected.Id, item.IsOption ? item.Option.Id : null);
+            }
+        }
+
         private void DeleteSelected()
         {
             var item = SelectedItem();
@@ -627,6 +665,83 @@ namespace EdenPOS
             refreshBalance();
 
             var save = Theme.Button("Guardar entrada", ButtonVariant.Primary); save.DialogResult = DialogResult.OK;
+            var cancel = Theme.Button("Cancelar", ButtonVariant.Secondary);
+            InventoryDialogKit.AddActions(this, save, cancel, m, w, ClientSize.Height - m - Theme.Dim.Control + Theme.Space.Sm);
+            Theme.FitDialogToWorkingArea(this);
+        }
+    }
+
+    // RF-15: salida de inventario que no es venta. "Ajuste por conteo" pide el stock contado; los demás, la cantidad que sale.
+    public sealed class InventoryAdjustmentDialog : Form
+    {
+        private static readonly string[] Types = { InventoryMovementTypes.Perdida, InventoryMovementTypes.ConsumoInterno, InventoryMovementTypes.Ajuste };
+        private static readonly string[] TypeLabels = { "Pérdida (roto, vencido, extraviado)", "Consumo interno (uso del local)", "Ajuste por conteo físico" };
+
+        private readonly ComboBox type;
+        private readonly NumericUpDown quantity;
+        private readonly TextBox reason;
+        public string MovementType { get { return Types[Math.Max(0, type.SelectedIndex)]; } }
+        public int Quantity { get { return (int)quantity.Value; } }
+        public string Reason { get { return reason.Text.Trim(); } }
+
+        public InventoryAdjustmentDialog(string displayName, int currentStock)
+        {
+            Text = "Registrar salida";
+            const int m = InventoryDialogKit.Margin;
+            const int w = 424;
+            InventoryDialogKit.Setup(this, w + m * 2, 452);
+
+            var title = new Label { Text = displayName, Font = Theme.Title, ForeColor = Theme.Ink, AutoEllipsis = true, AutoSize = false };
+            title.SetBounds(m, m, w, 30);
+            var balance = Theme.Label("", Theme.Body.Size, FontStyle.Regular, Theme.Muted);
+            balance.AutoSize = false; balance.SetBounds(m, m + 34, w, 24);
+            Controls.Add(title); Controls.Add(balance);
+
+            type = Theme.Combo();
+            type.Items.AddRange(TypeLabels);
+            type.SelectedIndex = 0;
+            EdenField typeField;
+            var y = InventoryDialogKit.AddField(this, "Tipo de salida", type, m, 92, w, out typeField);
+            quantity = new NumericUpDown { Font = Theme.Emphasis, Minimum = 1, Maximum = Math.Max(1, currentStock), Value = 1, ThousandsSeparator = true };
+            EdenField quantityField;
+            var quantityTop = y + Theme.Space.Lg;
+            y = InventoryDialogKit.AddField(this, "Cantidad que sale", quantity, m, quantityTop, w, out quantityField);
+            var quantityLabel = Controls.OfType<Label>().Last(l => l.Top == quantityTop);
+            reason = new TextBox { Font = Theme.Body, MaxLength = 150 };
+            EdenField reasonField;
+            InventoryDialogKit.AddField(this, "Motivo (obligatorio)", reason, m, y + Theme.Space.Lg, w, out reasonField);
+            reasonField.Placeholder = "Por ejemplo: botella rota al reponer";
+
+            // Respuesta inmediata: saldo actual y cómo quedará.
+            Action refresh = () =>
+            {
+                var isCount = MovementType == InventoryMovementTypes.Ajuste;
+                quantityLabel.Text = isCount ? "Stock contado" : "Cantidad que sale";
+                var after = isCount ? (long)quantity.Value : (long)currentStock - (long)quantity.Value;
+                balance.Text = "Saldo actual: " + currentStock + "   →   quedará en " + after;
+            };
+            type.SelectedIndexChanged += (s, e) =>
+            {
+                var isCount = MovementType == InventoryMovementTypes.Ajuste;
+                quantity.Minimum = isCount ? 0 : 1;
+                quantity.Maximum = isCount ? 1000000 : Math.Max(1, currentStock);
+                quantity.Value = isCount ? Math.Max(0, currentStock) : 1;
+                refresh();
+            };
+            quantity.ValueChanged += (s, e) => refresh();
+            refresh();
+
+            var save = Theme.Button("Guardar salida", ButtonVariant.Primary);
+            save.Click += (s, e) =>
+            {
+                if (!Validation.IsValidRequiredText(reason.Text, 3, 150))
+                {
+                    Theme.Message(this, Tone.Warning, "Ingrese un motivo de 3 a 150 caracteres.", "Registrar salida");
+                    reason.Focus();
+                    return;
+                }
+                DialogResult = DialogResult.OK;
+            };
             var cancel = Theme.Button("Cancelar", ButtonVariant.Secondary);
             InventoryDialogKit.AddActions(this, save, cancel, m, w, ClientSize.Height - m - Theme.Dim.Control + Theme.Space.Sm);
             Theme.FitDialogToWorkingArea(this);

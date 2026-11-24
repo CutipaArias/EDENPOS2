@@ -36,6 +36,20 @@ namespace EdenPOS
         public const string CuentaBloqueada = "CUENTA_BLOQUEADA";
         public const string CuentaDesbloqueada = "CUENTA_DESBLOQUEADA";
         public const string SesionInactividad = "SESION_INACTIVIDAD";
+        public const string InventarioAjustado = "INVENTARIO_AJUSTADO";
+    }
+
+    // RF-15: tipos de movimiento de inventario (columna movimiento_inventario.tipo).
+    // Entrada, Venta, Reembolso, Pérdida y Consumo interno guardan la cantidad en positivo; Ajuste guarda la diferencia con signo
+    // (stock contado - stock del sistema).
+    public static class InventoryMovementTypes
+    {
+        public const string Entrada = "Entrada";
+        public const string Venta = "Venta";
+        public const string Reembolso = "Reembolso";
+        public const string Perdida = "Pérdida";
+        public const string ConsumoInterno = "Consumo interno";
+        public const string Ajuste = "Ajuste";
     }
 
     public sealed class AuditEntry
