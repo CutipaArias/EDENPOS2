@@ -467,7 +467,7 @@ namespace EdenPOS
                 .SelectMany(AppData.GetTicketLockers)
                 .Distinct()
                 .ToList();
-            using (var dialog = new LockerSelectionDialog(occupied, LockerNumbers))
+            using (var dialog = new LockerSelectionDialog(occupied, LockerNumbers, AppData.LockersOutOfService))
             {
                 if (dialog.ShowDialog(this) != DialogResult.OK) return;
                 LockerNumbers = dialog.SelectedLockers.ToList();
@@ -504,7 +504,7 @@ namespace EdenPOS
         }
     }
 
-    internal enum LockerState { Free, Selected, Occupied }
+    internal enum LockerState { Free, Selected, Occupied, OutOfService }
 
     // Candado: libre / seleccionado / ocupado, distinguibles por forma y texto además del color.
     internal sealed class LockerTile : Control
@@ -539,6 +539,7 @@ namespace EdenPOS
             {
                 case LockerState.Selected: fill = Theme.GreenDark; border = Theme.GreenDark; ink = Color.White; caption = Color.White; label = "✓ Seleccionado"; break;
                 case LockerState.Occupied: fill = Theme.DangerSoft; border = Theme.Danger; ink = Theme.Danger; caption = Theme.Danger; label = "Ocupado"; break;
+                case LockerState.OutOfService: fill = Theme.Canvas; border = Theme.Warning; ink = Theme.Muted; caption = Theme.Warning; label = "Fuera de uso"; break;
                 default: fill = pressed ? Theme.SoftPressed : hover ? Theme.GreenSoft : Theme.Surface; border = Theme.BorderStrong; ink = Theme.Ink; caption = Theme.Muted; label = "Libre"; break;
             }
             using (var path = Gfx.Round(rect, Theme.Radius.Control + 2))
@@ -577,10 +578,13 @@ namespace EdenPOS
         private readonly Label selectionLabel;
         public List<int> SelectedLockers { get { return selected.OrderBy(x => x).ToList(); } }
 
-        public LockerSelectionDialog(System.Collections.Generic.IEnumerable<int> occupiedLockers, System.Collections.Generic.IEnumerable<int> selectedLockers = null)
+        public LockerSelectionDialog(System.Collections.Generic.IEnumerable<int> occupiedLockers, System.Collections.Generic.IEnumerable<int> selectedLockers = null,
+            System.Collections.Generic.IEnumerable<int> outOfServiceLockers = null)
         {
             DialogKit.Prepare(this, "Seleccionar candado", 740, 600);
             var occupied = new System.Collections.Generic.HashSet<int>(occupiedLockers ?? new int[0]);
+            // RN-06: llaves no devueltas que la dueña aún no liberó.
+            var outOfService = new System.Collections.Generic.HashSet<int>(outOfServiceLockers ?? new int[0]);
             selected.UnionWith((selectedLockers ?? new int[0]).Where(x => x >= 1 && x <= 35));
             occupied.ExceptWith(selected);
 
@@ -591,7 +595,12 @@ namespace EdenPOS
             for (var number = 1; number <= 35; number++)
             {
                 var tile = new LockerTile(number) { Dock = DockStyle.Fill, Margin = new Padding(Theme.Space.Xs) };
-                if (occupied.Contains(number))
+                if (outOfService.Contains(number) && !selected.Contains(number))
+                {
+                    tile.State = LockerState.OutOfService;
+                    tile.Click += (s, e) => Theme.Message(this, Tone.Warning, "La llave " + ((LockerTile)s).Number + " está fuera de uso porque no se devolvió. La dueña puede liberarla en Configuración > Cargos por pérdida.", "Llave fuera de uso");
+                }
+                else if (occupied.Contains(number))
                 {
                     tile.State = LockerState.Occupied;
                     tile.Click += (s, e) => Theme.Message(this, Tone.Info, "El candado " + ((LockerTile)s).Number + " está ocupado. Seleccione uno libre.", "Candado ocupado");
@@ -606,8 +615,10 @@ namespace EdenPOS
             var legend = new FlowLayoutPanel { Dock = DockStyle.Top, Height = Theme.Dim.Pill + Theme.Space.Md, WrapContents = false, Margin = new Padding(0), Padding = new Padding(0) };
             var free = Theme.Pill("Libre", Tone.Neutral); free.Margin = new Padding(0, 0, Theme.Space.Sm, 0);
             var chosen = Theme.Pill("✓ Seleccionado", Tone.Brand); chosen.Margin = new Padding(0, 0, Theme.Space.Sm, 0);
-            var busy = Theme.Pill("Ocupado", Tone.Danger);
+            var busy = Theme.Pill("Ocupado", Tone.Danger); busy.Margin = new Padding(0, 0, Theme.Space.Sm, 0);
+            var lost = Theme.Pill("Fuera de uso", Tone.Warning);
             legend.Controls.Add(free); legend.Controls.Add(chosen); legend.Controls.Add(busy);
+            if (outOfService.Count > 0) legend.Controls.Add(lost);
             body.Controls.Add(grid);
             body.Controls.Add(legend);
 
@@ -948,7 +959,7 @@ namespace EdenPOS
                 .SelectMany(AppData.GetTicketLockers)
                 .Distinct()
                 .ToList();
-            using (var dialog = new LockerSelectionDialog(occupied, AppData.GetTicketLockers(ticket)))
+            using (var dialog = new LockerSelectionDialog(occupied, AppData.GetTicketLockers(ticket), AppData.LockersOutOfService))
             {
                 if (dialog.ShowDialog(this) != DialogResult.OK) return;
                 try

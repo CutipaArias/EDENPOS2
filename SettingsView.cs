@@ -9,7 +9,7 @@ using System.Windows.Forms;
 namespace EdenPOS
 {
     // Configuración: una navegación de secciones a la izquierda y UNA sección a la vez a la derecha.
-    // Secciones: Negocio · Usuarios · Promociones · Facturación electrónica (simulada) · Impresora · Consulta de DNI · Copias de seguridad y datos · Réplica en Supabase.
+    // Secciones: Negocio · Usuarios · Promociones · Cargos por pérdida · Facturación electrónica (simulada) · Impresora · Consulta de DNI · Copias de seguridad y datos · Réplica en Supabase.
     public sealed class SettingsView : UserControl, IRefreshable
     {
         private readonly TextBox store;
@@ -26,6 +26,11 @@ namespace EdenPOS
         private readonly CheckBox promoSexta;
         private readonly NumericUpDown promoMinimo;
         private readonly NumericUpDown promoPorcentaje;
+        // RF-22 / RN-06: cargos por pérdida y llaves fuera de uso.
+        private readonly NumericUpDown lossKeyCharge;
+        private readonly ComboBox lossLockers;
+        private readonly Label lossLockersInfo;
+        private Button lossRelease;
         private readonly CheckBox einvSimularRechazo;
         private readonly Label einvResumen;
         private readonly Pill pillAceptado;
@@ -63,7 +68,7 @@ namespace EdenPOS
         // RefreshView (que MainForm llama al cambiar los datos) no pisa lo que la dueña esté escribiendo:
         // cada grupo de campos se recarga solo si no tiene cambios sin guardar.
         private bool loading;
-        private bool businessDirty, dniDirty, promoDirty;
+        private bool businessDirty, dniDirty, promoDirty, lossDirty;
 
         private readonly Dictionary<string, SectionPage> pages = new Dictionary<string, SectionPage>();
         private readonly Dictionary<string, NavItem> navItems = new Dictionary<string, NavItem>();
@@ -98,6 +103,10 @@ namespace EdenPOS
             promoSexta.CheckedChanged += (s, e) => { if (!loading) promoDirty = true; };
             promoMinimo.ValueChanged += (s, e) => { if (!loading) promoDirty = true; };
             promoPorcentaje.ValueChanged += (s, e) => { if (!loading) promoDirty = true; };
+            lossKeyCharge = new NumericUpDown { DecimalPlaces = 2, Minimum = 0m, Maximum = AppData.CargoPerdidaMaximo, ThousandsSeparator = true };
+            lossKeyCharge.ValueChanged += (s, e) => { if (!loading) lossDirty = true; };
+            lossLockers = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat, Font = Theme.Body };
+            lossLockersInfo = new Label { Font = Theme.Body, ForeColor = Theme.Muted, AutoSize = false };
 
             autoEnabled = MakeCheck("Copia automática");
             autoFolder = new TextBox { MaxLength = 260 };
@@ -134,6 +143,7 @@ namespace EdenPOS
             AddSection(pageHost, "negocio", "Negocio", BuildBusiness());
             AddSection(pageHost, "usuarios", "Usuarios", new[] { usersPanel }, true);
             AddSection(pageHost, "promociones", "Promociones", BuildPromotions());
+            AddSection(pageHost, "perdidas", "Cargos por pérdida", BuildLossCharges());
             AddSection(pageHost, "facturacion", "Facturación electrónica (simulada)", BuildInvoicing());
             AddSection(pageHost, "impresora", "Impresora", BuildPrinter());
             AddSection(pageHost, "dni", "Consulta de DNI", BuildDni());
@@ -240,6 +250,95 @@ namespace EdenPOS
             savePromo.Click += SavePromotions_Click;
             card.Add(ButtonRow(savePromo), Theme.Space.Xl);
             yield return card;
+        }
+
+        // RF-22: la dueña configura el cargo por llave no devuelta; el de cada implemento se edita en Inventario (Editar artículo).
+        // RN-06: las llaves no devueltas quedan fuera de uso hasta que la dueña confirma aquí que se repusieron.
+        private IEnumerable<StackCard> BuildLossCharges()
+        {
+            var card = new StackCard();
+            card.Add(CardTitle("Cargos por pérdida"), 0);
+            card.Add(Note("Si al finalizar la visita el cliente no devuelve una llave o un implemento, este cargo se suma a su cuenta."), Theme.Space.Xs);
+            card.Add(Theme.LabelField("Cargo por pérdida de llave (S/, 0 a " + AppData.CargoPerdidaMaximo.ToString("0") + ")"), Theme.Space.Lg);
+            card.Add(Theme.Field(lossKeyCharge), Theme.Space.Xs, 160);
+            card.Add(Note("Con 0 no se cobra nada, pero la pérdida igual queda registrada en el recibo y en Auditoría.", Theme.Caption), Theme.Space.Xs);
+            card.Add(Note("El cargo de cada implemento (toallas, sandalias y demás alquileres) se configura en Inventario, al editar el artículo.", Theme.Caption), Theme.Space.Sm);
+            var save = Theme.Button("Guardar cargo", ButtonVariant.Primary);
+            save.Click += SaveLossCharge_Click;
+            card.Add(ButtonRow(save), Theme.Space.Xl);
+            yield return card;
+
+            var lockers = new StackCard();
+            lockers.Add(CardTitle("Llaves fuera de uso"), 0);
+            lockers.Add(Note("Una llave no devuelta no se asigna a otra visita hasta que usted confirme que la recuperó o la repuso."), Theme.Space.Xs);
+            lockers.Add(lossLockersInfo, Theme.Space.Lg);
+            lockers.Add(Theme.Field(lossLockers), Theme.Space.Sm, 160);
+            lossRelease = Theme.Button("Marcar como repuesta", ButtonVariant.Secondary);
+            lossRelease.Click += ReleaseLocker_Click;
+            lockers.Add(ButtonRow(lossRelease), Theme.Space.Lg);
+            yield return lockers;
+        }
+
+        private void RefreshLossCharges()
+        {
+            var wasLoading = loading;
+            loading = true;   // el valor leído de la base no cuenta como cambio sin guardar
+            try { if (!lossDirty) lossKeyCharge.Value = Math.Min(lossKeyCharge.Maximum, Math.Max(lossKeyCharge.Minimum, AppData.CargoPerdidaLlave)); }
+            finally { loading = wasLoading; }
+            var list = AppData.LockersOutOfService;
+            var previous = lossLockers.SelectedItem as string;
+            lossLockers.Items.Clear();
+            foreach (var locker in list) lossLockers.Items.Add("Llave N.º " + locker);
+            if (previous != null && lossLockers.Items.Contains(previous)) lossLockers.SelectedItem = previous;
+            else if (lossLockers.Items.Count > 0) lossLockers.SelectedIndex = 0;
+            lossLockersInfo.Text = list.Count == 0 ? "No hay llaves fuera de uso." : list.Count == 1 ? "1 llave fuera de uso." : list.Count + " llaves fuera de uso.";
+            lossLockersInfo.ForeColor = list.Count == 0 ? Theme.Muted : Theme.Warning;
+            lossLockers.Enabled = lossRelease.Enabled = list.Count > 0;
+        }
+
+        private void SaveLossCharge_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                AppData.SetCargoPerdidaLlave(Math.Round(lossKeyCharge.Value, 2));
+            }
+            catch (Exception ex) when (ex is InvalidOperationException || ex is ArgumentException)
+            {
+                Msg(Tone.Warning, ex.Message, "Cargos por pérdida");
+                return;
+            }
+            catch (MySqlConnector.MySqlException ex)
+            {
+                AppData.LogError(ex, "Guardar cargo por pérdida (base de datos)");
+                Msg(Tone.Danger, AppData.DescribeDatabaseError(ex), "Cargos por pérdida");
+                return;
+            }
+            lossDirty = false;
+            Msg(Tone.Success, "Cargo por pérdida de llave guardado.", "Edén POS");
+        }
+
+        private void ReleaseLocker_Click(object sender, EventArgs e)
+        {
+            var text = lossLockers.SelectedItem as string;
+            int locker;
+            if (text == null || !int.TryParse(text.Substring(text.LastIndexOf(' ') + 1), out locker)) return;
+            if (MessageBox.Show(FindForm(), "¿Confirma que la llave N.º " + locker + " se recuperó o se repuso? Volverá a estar disponible para las visitas.",
+                    "Liberar llave", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+            try
+            {
+                AppData.ReleaseLockerOutOfService(locker);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException || ex is ArgumentException)
+            {
+                Msg(Tone.Warning, ex.Message, "Llaves fuera de uso");
+            }
+            catch (MySqlConnector.MySqlException ex)
+            {
+                AppData.LogError(ex, "Liberar llave fuera de uso (base de datos)");
+                Msg(Tone.Danger, AppData.DescribeDatabaseError(ex), "Llaves fuera de uso");
+            }
+            try { RefreshLossCharges(); }
+            catch (MySqlConnector.MySqlException ex) { AppData.LogError(ex, "Refrescar llaves fuera de uso"); }
         }
 
         private IEnumerable<StackCard> BuildInvoicing()
@@ -590,6 +689,7 @@ namespace EdenPOS
                     promoPorcentaje.Value = Math.Min(promoPorcentaje.Maximum, Math.Max(promoPorcentaje.Minimum, settings.PromoGrupalPorcentaje));
                 }
                 usersPanel.RefreshUsers();
+                RefreshLossCharges();
                 RefreshAutoBackup();
                 RefreshEinv();
                 if (force) printerDirty = false;

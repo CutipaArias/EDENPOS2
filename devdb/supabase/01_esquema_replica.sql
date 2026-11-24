@@ -89,6 +89,9 @@ CREATE TABLE IF NOT EXISTS edenpos.producto (
   stock_minimo integer NOT NULL DEFAULT 0
 );
 
+-- Cargo por pérdida del implemento (RF-19 / RN-07). Por ahora la app NO lo replica (trabajo local); la columna queda lista.
+ALTER TABLE edenpos.producto ADD COLUMN IF NOT EXISTS cargo_perdida numeric(10,2) NOT NULL DEFAULT 0;
+
 CREATE TABLE IF NOT EXISTS edenpos.producto_variante (
   id_variante varchar(32) NOT NULL PRIMARY KEY,
   id_producto varchar(32) NOT NULL,
@@ -238,6 +241,10 @@ CREATE TABLE IF NOT EXISTS edenpos.configuracion (
   promo_grupal_porcentaje numeric(5,2) NOT NULL DEFAULT 10,
   CONSTRAINT chk_configuracion_single_row CHECK (id = 1)
 );
+
+-- Cargo por pérdida de llave y llaves fuera de uso (RF-19 / RN-06 / RN-07). Por ahora la app NO los replica (trabajo local); las columnas quedan listas.
+ALTER TABLE edenpos.configuracion ADD COLUMN IF NOT EXISTS cargo_perdida_llave numeric(10,2) NOT NULL DEFAULT 0;
+ALTER TABLE edenpos.configuracion ADD COLUMN IF NOT EXISTS llaves_fuera_uso varchar(120) NOT NULL DEFAULT '';
 
 -- Metadatos de la replica (ultima subida, identificador de la instalacion, etc.)
 CREATE TABLE IF NOT EXISTS edenpos._replica_info (

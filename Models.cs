@@ -18,6 +18,8 @@ namespace EdenPOS
         public int InitialStock { get; set; }
         public bool TrackInventory { get; set; }
         public int StockMinimo { get; set; }
+        // RN-07 / RF-22: cargo que se suma al recibo si el cliente no devuelve este implemento (0 = sin cargo). Las variantes usan el del artículo.
+        public decimal CargoPerdida { get; set; }
         public List<ProductOption> Options { get; set; }
     }
 
@@ -37,6 +39,29 @@ namespace EdenPOS
         public const string CuentaDesbloqueada = "CUENTA_DESBLOQUEADA";
         public const string SesionInactividad = "SESION_INACTIVIDAD";
         public const string InventarioAjustado = "INVENTARIO_AJUSTADO";
+        // RF-19 / RN-06 / RN-07: llave o implemento no devuelto al cobrar la visita, y liberación de una llave repuesta.
+        public const string LlavePerdida = "LLAVE_PERDIDA";
+        public const string ImplementoPerdido = "IMPLEMENTO_PERDIDO";
+        public const string LlaveLiberada = "LLAVE_LIBERADA";
+        public const string CargoPerdidaCambiado = "CARGO_PERDIDA_CAMBIADO";
+    }
+
+    // RF-19: resultado de la devolución de llaves e implementos al cobrar una visita (ticket guardado con llaves).
+    // Solo lista lo que NO se devolvió; AppData.BuildLossChargeLines arma las líneas de cargo con los montos configurados.
+    public sealed class LossReport
+    {
+        public List<int> LostKeys { get; set; } = new List<int>();
+        public List<LostImplement> LostImplements { get; set; } = new List<LostImplement>();
+
+        [ScriptIgnore]
+        public bool IsEmpty { get { return (LostKeys == null || LostKeys.Count == 0) && (LostImplements == null || LostImplements.Count == 0); } }
+    }
+
+    public sealed class LostImplement
+    {
+        public string ProductId { get; set; }
+        public string OptionId { get; set; }
+        public int Quantity { get; set; }
     }
 
     // RF-15: tipos de movimiento de inventario (columna movimiento_inventario.tipo).

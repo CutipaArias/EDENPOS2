@@ -43,6 +43,7 @@ CREATE TABLE producto (
   stock INT NOT NULL DEFAULT 0,
   stock_inicial INT NOT NULL DEFAULT 0,
   stock_minimo INT NOT NULL DEFAULT 0,
+  cargo_perdida DECIMAL(10,2) NOT NULL DEFAULT 0,
   UNIQUE KEY uq_producto_nombre_categoria (nombre, categoria)
 );
 
@@ -203,6 +204,8 @@ CREATE TABLE configuracion (
   promo_grupal_minimo_personas INT NOT NULL DEFAULT 4,
   promo_grupal_porcentaje DECIMAL(5,2) NOT NULL DEFAULT 10,
   simular_rechazo_comprobantes TINYINT(1) NOT NULL DEFAULT 0,
+  cargo_perdida_llave DECIMAL(10,2) NOT NULL DEFAULT 0,
+  llaves_fuera_uso VARCHAR(120) NOT NULL DEFAULT '',
   CONSTRAINT chk_configuracion_single_row CHECK (id = 1)
 );
 

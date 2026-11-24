@@ -94,6 +94,7 @@ la cadena de conexión intente cambiar esas opciones.
 | RF-14 a RF-16 Inventario y stock mínimo | Inventario | `ProductsView.cs` |
 | RF-17 Reportes | Reportes | `Reports.cs`, `ReportsView.cs` |
 | RF-18 Respaldos | Configuración → Copias de seguridad | `AutoBackup.cs`, `SupabaseReplica.cs` |
+| RF-19, RN-06, RN-07 y RF-22 (cargos por pérdida) Devolución de llaves e implementos | Cobro de un ticket con llaves, Configuración → Cargos por pérdida e Inventario → Editar artículo | `KeyReturns.cs`, `KeyReturnDialog.cs`, `AppData.AddReceipt` (valida los cargos; las llaves no devueltas quedan fuera de uso hasta que la dueña las libera) |
 | RNF-03 Seguridad del PIN | — | `Security.cs` (PBKDF2 con sal) |
 | RNF-04 Trazabilidad | Auditoría | `AuditView.cs`, `AppData.RegistrarAuditoria` |
 

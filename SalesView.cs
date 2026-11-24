@@ -1029,7 +1029,7 @@ namespace EdenPOS
                 .SelectMany(AppData.GetTicketLockers)
                 .Distinct()
                 .ToList();
-            using (var dialog = new LockerSelectionDialog(occupied, AppData.GetTicketLockers(ticket)))
+            using (var dialog = new LockerSelectionDialog(occupied, AppData.GetTicketLockers(ticket), AppData.LockersOutOfService))
             {
                 if (dialog.ShowDialog(FindForm()) != DialogResult.OK) return;
                 try
@@ -1076,12 +1076,33 @@ namespace EdenPOS
             }
             var saleTotal = cart.Sum(x => x.LineTotal);
             if (saleTotal == 0m && MessageBox.Show("Este ticket tiene total S/ 0.00. ¿Registrar como cortesía?", "Venta sin costo", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
-            using (var reminder = new RentalReminderDialog())
-                if (reminder.ShowDialog(FindForm()) != DialogResult.OK) return;
+            // RF-19: una visita con llaves confirma la devolución de llaves e implementos; lo no devuelto se cobra (RN-07).
+            var ticketLockers = string.IsNullOrWhiteSpace(loadedSavedTicketId) ? new List<int>() : loadedLockerNumbers.ToList();
+            LossReport lossReport = null;
+            var chargeLines = new List<ReceiptLine>();
             PromocionResultado promotion;
             try
             {
+                if (ticketLockers.Count > 0)
+                {
+                    using (var returns = new KeyReturnDialog(ticketLockers, cart, AppData.Products, AppData.CargoPerdidaLlave))
+                    {
+                        if (returns.ShowDialog(FindForm()) != DialogResult.OK) return;
+                        lossReport = returns.Report;
+                    }
+                    chargeLines = AppData.BuildLossChargeLines(lossReport);
+                }
+                else
+                {
+                    using (var reminder = new RentalReminderDialog())
+                        if (reminder.ShowDialog(FindForm()) != DialogResult.OK) return;
+                }
                 promotion = AppData.CalculatePromotion(dniBox.Text, cart);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException || ex is ArgumentException)
+            {
+                Theme.Message(FindForm(), Tone.Warning, ex.Message, "No se pudo cobrar");
+                return;
             }
             catch (MySqlConnector.MySqlException ex)
             {
@@ -1089,6 +1110,8 @@ namespace EdenPOS
                 Theme.Message(FindForm(), Tone.Danger, AppData.DescribeDatabaseError(ex), "No se pudo cobrar");
                 return;
             }
+            var saleLines = cart.Concat(chargeLines).ToList();
+            saleTotal += chargeLines.Sum(x => x.LineTotal);
             using (var dialog = new CheckoutDialog(saleTotal, promotion, dniBox.Text))
             {
                 if (dialog.ShowDialog(FindForm()) != DialogResult.OK) return;
@@ -1096,9 +1119,9 @@ namespace EdenPOS
                 try
                 {
                     chargeButton.Enabled = false;
-                    // El ticket guardado (y sus llaves) se libera dentro de la misma transacción del cobro.
-                    receipt = AppData.AddReceipt(cart, customerBox.Text, dniBox.Text, dialog.PaymentMethod, dialog.AmountReceived, dialog.CashAmount, dialog.YapeAmount, dialog.Discount, dialog.PromotionId,
-                        string.IsNullOrWhiteSpace(loadedSavedTicketId) ? null : loadedSavedTicketId);
+                    // El ticket guardado (y sus llaves devueltas) se libera dentro de la misma transacción del cobro; las no devueltas quedan fuera de uso.
+                    receipt = AppData.AddReceipt(saleLines, customerBox.Text, dniBox.Text, dialog.PaymentMethod, dialog.AmountReceived, dialog.CashAmount, dialog.YapeAmount, dialog.Discount, dialog.PromotionId,
+                        string.IsNullOrWhiteSpace(loadedSavedTicketId) ? null : loadedSavedTicketId, lossReport);
                 }
                 catch (AppData.SavedTicketUnavailableException)
                 {
