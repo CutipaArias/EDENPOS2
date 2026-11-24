@@ -338,10 +338,12 @@ namespace EdenPOS
 
             var export = Theme.Button("Guardar recibo", ButtonVariant.Secondary);
             export.Click += (s, e) => ExportReceipt(receipt);
+            var print = Theme.Button("Imprimir", ButtonVariant.Secondary);
+            print.Click += (s, e) => ReceiptPrinting.PrintReceipt(this, receipt, false);
             var done = Theme.Button("Listo", ButtonVariant.Primary);
             done.DialogResult = DialogResult.OK;
             Controls.Add(body);
-            Controls.Add(DialogKit.Actions(null, done, export));
+            Controls.Add(DialogKit.Actions(null, done, print, export));
             AcceptButton = done;
             Theme.FitDialogToWorkingArea(this);
         }

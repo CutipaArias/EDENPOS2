@@ -90,6 +90,7 @@ la cadena de conexión intente cambiar esas opciones.
 | RF-07 a RF-10 Visita, casilleros, consumos y cobro | Ventas | `SalesView.cs`, `Dialogs.cs`, `AppData.AddReceipt` |
 | RF-11 Promociones | Cobro y Configuración → Promociones | `Promotions.cs` |
 | RF-12, RF-13, RF-21 Boletas (simuladas) | Recibos y Configuración → Facturación | `ElectronicInvoicing.cs` |
+| RF-12 / RNF-07 Impresión del recibo en la térmica de 80 mm | Recibos → Imprimir, cobro en Ventas y Configuración → Impresora | `ReceiptPrinting.cs` (tabla `impresora_pc` por PC, `devdb/migraciones/006_rf12_impresora.sql`) |
 | RF-14 a RF-16 Inventario y stock mínimo | Inventario | `ProductsView.cs` |
 | RF-17 Reportes | Reportes | `Reports.cs`, `ReportsView.cs` |
 | RF-18 Respaldos | Configuración → Copias de seguridad | `AutoBackup.cs`, `SupabaseReplica.cs` |

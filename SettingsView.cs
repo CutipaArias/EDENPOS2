@@ -9,7 +9,7 @@ using System.Windows.Forms;
 namespace EdenPOS
 {
     // Configuración: una navegación de secciones a la izquierda y UNA sección a la vez a la derecha.
-    // Secciones: Negocio · Usuarios · Promociones · Facturación electrónica (simulada) · Consulta de DNI · Copias de seguridad y datos · Réplica en Supabase.
+    // Secciones: Negocio · Usuarios · Promociones · Facturación electrónica (simulada) · Impresora · Consulta de DNI · Copias de seguridad y datos · Réplica en Supabase.
     public sealed class SettingsView : UserControl, IRefreshable
     {
         private readonly TextBox store;
@@ -34,6 +34,11 @@ namespace EdenPOS
         private readonly Pill pillAnulado;
         private Button einvReintentar;
         private bool refreshingEinv;
+        // Impresora térmica de esta PC (RF-12 / RNF-07), guardada en la tabla impresora_pc.
+        private readonly EdenComboBox printerCombo;
+        private readonly CheckBox printOnCharge;
+        private readonly Label printerStatus;
+        private bool printerDirty;
         private readonly CheckBox autoEnabled;
         private readonly TextBox autoFolder;
         private readonly NumericUpDown autoKeep;
@@ -81,6 +86,11 @@ namespace EdenPOS
             promoSexta = MakeCheck("Sexta visita gratis (requiere DNI del cliente)");
             einvSimularRechazo = MakeCheck("Simular rechazo (para probar el reintento)");
             einvSimularRechazo.CheckedChanged += EinvSimularRechazo_Changed;
+            printerCombo = Theme.Combo();
+            printOnCharge = MakeCheck("Imprimir recibo al cobrar");
+            printerStatus = new Label { Font = Theme.Caption, ForeColor = Theme.Muted, AutoSize = false };
+            printerCombo.SelectedIndexChanged += (s, e) => { if (!loading) printerDirty = true; };
+            printOnCharge.CheckedChanged += (s, e) => { if (!loading) printerDirty = true; };
             store.TextChanged += (s, e) => { if (!loading) businessDirty = true; };
             currency.TextChanged += (s, e) => { if (!loading) businessDirty = true; };
             dniEnabled.CheckedChanged += (s, e) => { if (!loading) dniDirty = true; };
@@ -125,6 +135,7 @@ namespace EdenPOS
             AddSection(pageHost, "usuarios", "Usuarios", new[] { usersPanel }, true);
             AddSection(pageHost, "promociones", "Promociones", BuildPromotions());
             AddSection(pageHost, "facturacion", "Facturación electrónica (simulada)", BuildInvoicing());
+            AddSection(pageHost, "impresora", "Impresora", BuildPrinter());
             AddSection(pageHost, "dni", "Consulta de DNI", BuildDni());
             AddSection(pageHost, "copias", "Copias de seguridad y datos", BuildBackups());
             AddSection(pageHost, "supabase", "Réplica en Supabase", BuildSupabase());
@@ -253,6 +264,26 @@ namespace EdenPOS
             einvReintentar.Click += EinvReintentar_Click;
             tools.Add(ButtonRow(einvReintentar), Theme.Space.Xl);
             yield return tools;
+        }
+
+        private IEnumerable<StackCard> BuildPrinter()
+        {
+            var card = new StackCard();
+            card.Add(CardTitle("Impresora de recibos"), 0);
+            card.Add(Note("Impresora térmica de esta PC (papel de 80 mm). Se guarda en la base de datos por equipo: cada caja elige la suya."), Theme.Space.Xs);
+            card.Add(Theme.LabelField("Impresora"), Theme.Space.Xl);
+            card.Add(printerCombo, Theme.Space.Xs, 440);   // EdenComboBox ya dibuja su propio borde: no se envuelve en Theme.Field
+            card.Add(printerStatus, Theme.Space.Sm);
+            card.Add(Theme.Separator(), Theme.Space.Lg);
+            card.Add(printOnCharge, Theme.Space.Lg);
+            card.Add(Note("Al cobrar en Ventas, el recibo se imprime solo. Si la impresora falla, el cobro igual queda registrado y puede reimprimirlo desde Recibos."), Theme.Space.Xs, 0, Theme.Caption);
+
+            var savePrinter = Theme.Button("Guardar impresora", ButtonVariant.Primary);
+            savePrinter.Click += SavePrinter_Click;
+            var reload = Theme.Button("Actualizar lista", ButtonVariant.Secondary);
+            reload.Click += (s, e) => { printerDirty = false; RefreshPrinter(); };
+            card.Add(ButtonRow(savePrinter, reload), Theme.Space.Xl);
+            yield return card;
         }
 
         private IEnumerable<StackCard> BuildDni()
@@ -561,6 +592,8 @@ namespace EdenPOS
                 usersPanel.RefreshUsers();
                 RefreshAutoBackup();
                 RefreshEinv();
+                if (force) printerDirty = false;
+                RefreshPrinter();
                 RefreshSupabase(force);
                 var customers = AppData.Customers.Count;
                 customersInfo.Text = customers == 1 ? "Hay 1 cliente guardado localmente." : "Hay " + customers + " clientes guardados localmente.";
@@ -607,6 +640,71 @@ namespace EdenPOS
                 einvResumen.ForeColor = Theme.Danger;
             }
             finally { refreshingEinv = false; }
+        }
+
+        // ---- Impresora de esta PC ------------------------------------------------------------------------------------------
+        private const string NoPrinterItem = "(Ninguna)";
+
+        // No pisa una elección sin guardar (RefreshView se llama cuando otra caja cambia datos).
+        private void RefreshPrinter()
+        {
+            if (printerDirty) return;
+            var wasLoading = loading;
+            loading = true;
+            try
+            {
+                PrinterConfig config;
+                try { config = AppData.GetPrinterConfig(); }
+                catch (Exception ex)
+                {
+                    AppData.LogError(ex, "Leer la impresora de esta PC");
+                    printerStatus.Text = "No se pudo leer la impresora guardada para esta PC.";
+                    printerStatus.ForeColor = Theme.Danger;
+                    return;
+                }
+                var installed = ReceiptPrinting.InstalledPrinters();
+                printerCombo.BeginUpdate();
+                printerCombo.Items.Clear();
+                printerCombo.Items.Add(NoPrinterItem);
+                foreach (var name in installed) printerCombo.Items.Add(name);
+                var missing = config.HasPrinter && !installed.Contains(config.NombreImpresora);
+                if (missing) printerCombo.Items.Add(config.NombreImpresora);
+                printerCombo.SelectedItem = config.HasPrinter ? (object)config.NombreImpresora : NoPrinterItem;
+                printerCombo.EndUpdate();
+                printOnCharge.Checked = config.ImprimirAlCobrar;
+
+                printerStatus.ForeColor = missing ? Theme.Danger : Theme.Muted;
+                printerStatus.Text = "Equipo: " + config.Equipo + "  ·  " +
+                    (missing ? "la impresora guardada no está instalada en esta PC."
+                     : !config.HasPrinter ? "sin impresora configurada."
+                     : installed.Count + (installed.Count == 1 ? " impresora instalada." : " impresoras instaladas."));
+            }
+            finally { loading = wasLoading; }
+        }
+
+        private void SavePrinter_Click(object sender, EventArgs e)
+        {
+            var name = printerCombo.SelectedItem as string;
+            if (name == NoPrinterItem) name = null;
+            if (printOnCharge.Checked && string.IsNullOrWhiteSpace(name))
+            {
+                Msg(Tone.Warning, "Elija una impresora para poder imprimir el recibo al cobrar.", "Impresora");
+                return;
+            }
+            try
+            {
+                AppData.SavePrinterConfig(name, printOnCharge.Checked);
+            }
+            catch (Exception ex)
+            {
+                AppData.LogError(ex, "Guardar la impresora de esta PC");
+                Msg(Tone.Warning, ex is MySqlConnector.MySqlException ? AppData.DescribeDatabaseError((MySqlConnector.MySqlException)ex)
+                    : ex is ArgumentException ? ex.Message : "No se pudo guardar la impresora. El detalle quedó en errors.log.", "Impresora");
+                return;
+            }
+            printerDirty = false;
+            RefreshPrinter();
+            Msg(Tone.Success, "Impresora guardada para esta PC.", "Impresora");
         }
 
         private void EinvSimularRechazo_Changed(object sender, EventArgs e)

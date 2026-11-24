@@ -205,3 +205,10 @@ CREATE TABLE configuracion (
   simular_rechazo_comprobantes TINYINT(1) NOT NULL DEFAULT 0,
   CONSTRAINT chk_configuracion_single_row CHECK (id = 1)
 );
+
+-- Impresora termica de recibos por PC (RF-12 / RNF-07). Configuracion local: no entra en copias ni en la replica.
+CREATE TABLE impresora_pc (
+  equipo VARCHAR(64) PRIMARY KEY,
+  nombre_impresora VARCHAR(200) NULL,
+  imprimir_al_cobrar TINYINT(1) NOT NULL DEFAULT 0
+);
