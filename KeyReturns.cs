@@ -10,7 +10,7 @@ namespace EdenPOS
     //
     // - Configuración: configuracion.cargo_perdida_llave (monto por llave no devuelta) y producto.cargo_perdida (por unidad de implemento).
     //   Solo la dueña los cambia (Configuración e Inventario son pantallas de la dueña; el setter lo vuelve a comprobar) y queda en Auditoría.
-    // - Implemento: artículo de la categoría ALQUILERES o con cargo por pérdida mayor que 0. Las variantes usan el cargo del artículo.
+    // - Implemento: artículo de tipo "Implemento" (producto.tipo, RF-14). Solo ellos tienen cargo por pérdida. Las variantes usan el cargo del artículo.
     // - Cobro: el diálogo de devolución arma un LossReport (solo lo NO devuelto). AddReceipt vuelve a armar las líneas de cargo con los montos
     //   configurados dentro de su transacción y rechaza el cobro si las líneas recibidas no coinciden (no se confía en la UI). Las líneas de
     //   cargo no tienen id_producto: no mueven stock ni cuentan para las promociones (ni SAUNA ni personas).
@@ -20,11 +20,12 @@ namespace EdenPOS
     {
         public const decimal CargoPerdidaMaximo = 1000m;
         public const string LossChargePrefix = "Cargo por pérdida";
-        private const string ImplementCategory = "ALQUILERES";
-
+        // RF-14: implemento = artículo de tipo "Implemento" (producto.tipo). Antes de la columna la regla era "categoría ALQUILERES o cargo
+        // por pérdida > 0"; la migración 009 marcó como Implemento justo esos artículos, así el diálogo de devolución ofrece los mismos que antes.
+        // Desde ahora la dueña lo decide en Inventario (Editar artículo): un artículo de ALQUILERES de tipo Producto ya no se pregunta al cobrar.
         public static bool IsImplement(Product product)
         {
-            return product != null && (string.Equals(product.Category, ImplementCategory, StringComparison.OrdinalIgnoreCase) || product.CargoPerdida > 0m);
+            return product != null && product.IsImplement;
         }
 
         // Línea de cargo por pérdida: sin artículo y con el prefijo reservado. Ninguna venta normal puede usar ese nombre.

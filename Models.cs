@@ -20,7 +20,37 @@ namespace EdenPOS
         public int StockMinimo { get; set; }
         // RN-07 / RF-22: cargo que se suma al recibo si el cliente no devuelve este implemento (0 = sin cargo). Las variantes usan el del artículo.
         public decimal CargoPerdida { get; set; }
+        // RF-14: "Producto" (se vende o consume) o "Implemento" (se presta y se devuelve: toalla, sandalia...). Columna producto.tipo.
+        // null = dato antiguo sin tipo (JSON o copia anterior): se deduce con ProductTypes.Infer al guardar.
+        public string Tipo { get; set; }
         public List<ProductOption> Options { get; set; }
+
+        [ScriptIgnore]
+        public bool IsImplement { get { return ProductTypes.Normalize(Tipo, Category, CargoPerdida) == ProductTypes.Implemento; } }
+    }
+
+    // RF-14: tipo de artículo (columna producto.tipo, VARCHAR(12)). Se eligió texto y no un TINYINT es_implemento porque se lee igual en
+    // la base, en las copias y en Supabase, sigue el estilo de otras columnas de estado (recibo.estado, comprobante.estado_envio) y admite
+    // otro tipo en el futuro sin otra migración.
+    public static class ProductTypes
+    {
+        public const string Producto = "Producto";
+        public const string Implemento = "Implemento";
+        public const string AlquileresCategory = "ALQUILERES";
+
+        // Regla anterior a la columna (RF-19): implemento = categoría ALQUILERES o cargo por pérdida mayor que 0. La usan la migración
+        // (devdb/migraciones/009) y los datos antiguos sin tipo, así ningún implemento existente deja de serlo.
+        public static string Infer(string category, decimal cargoPerdida)
+        {
+            return cargoPerdida > 0m || string.Equals((category ?? "").Trim(), AlquileresCategory, StringComparison.OrdinalIgnoreCase) ? Implemento : Producto;
+        }
+
+        // Valor guardado -> "Producto" o "Implemento". Sin valor (datos antiguos) se deduce; cualquier otro texto cuenta como Producto.
+        public static string Normalize(string tipo, string category, decimal cargoPerdida)
+        {
+            if (string.IsNullOrWhiteSpace(tipo)) return Infer(category, cargoPerdida);
+            return string.Equals(tipo.Trim(), Implemento, StringComparison.OrdinalIgnoreCase) ? Implemento : Producto;
+        }
     }
 
     // Nombres de acción de la tabla auditoria (cortos y estables: la pantalla de auditoría y los filtros dependen de ellos).
@@ -45,6 +75,9 @@ namespace EdenPOS
         public const string LlaveLiberada = "LLAVE_LIBERADA";
         public const string CargoPerdidaCambiado = "CARGO_PERDIDA_CAMBIADO";
         public const string LlavesQuitadas = "LLAVES_QUITADAS";
+        // RNF-09 / RN-14: el cliente retiró su consentimiento (se borran teléfono y DNI donde se puede) y exportación de datos personales.
+        public const string ConsentimientoRetirado = "CONSENTIMIENTO_RETIRADO";
+        public const string DatosExportados = "DATOS_EXPORTADOS";
     }
 
     // RF-19: resultado de la devolución de llaves e implementos al cobrar una visita (ticket guardado con llaves).
@@ -163,6 +196,8 @@ namespace EdenPOS
         public string Phone { get; set; }
         public bool DataConsent { get; set; }
         public DateTime? ConsentDate { get; set; }
+        // RNF-09 / RN-14: momento en que el cliente retiró su consentimiento (null = nunca lo retiró). Columna cliente.consentimiento_revocado.
+        public DateTime? ConsentRevokedAt { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
     }

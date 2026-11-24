@@ -28,6 +28,7 @@ internal static class RegressionChecks
             CheckConnectionSettings(directory);
             CheckInventoryDatabase();
             CheckCustomerConsentDatabase();
+            CheckComprobantesTipoConsentimientoDatabase();
             Console.WriteLine("Correcto: " + checks + " comprobaciones.");
             return 0;
         }
@@ -449,6 +450,243 @@ internal static class RegressionChecks
                     AppSession.SignOut();
                 }
                 Console.WriteLine("SQL: registro de clientes con consentimiento (RF-06) en una base temporal aislada.");
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("EDENPOS_MYSQL_CONNECTION", originalConnection);
+                MySqlConnection.ClearAllPools();
+                Execute(admin, "DROP DATABASE `" + database + "`");
+            }
+        }
+    }
+
+    // FD03: RF-13 (filtro de recibos por estado de envío y fechas), RF-21 (boletas no enviadas y reintento), RF-14 (producto.tipo y su
+    // migración) y RNF-09 / RN-14 (retiro del consentimiento, importación antigua sin consentimiento). Base temporal propia que se borra al final.
+    private static void CheckComprobantesTipoConsentimientoDatabase()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("EDENPOS_TEST_MYSQL_CONNECTION");
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            Console.WriteLine("SQL omitido: configure EDENPOS_TEST_MYSQL_CONNECTION para incluir la prueba de comprobantes, tipo y consentimiento.");
+            return;
+        }
+        // Reglas puras de RF-14.
+        Check(ProductTypes.Infer("ALQUILERES", 0m) == ProductTypes.Implemento && ProductTypes.Infer("bebidas", 2m) == ProductTypes.Implemento &&
+              ProductTypes.Infer("BEBIDAS", 0m) == ProductTypes.Producto, "RF-14: la regla anterior (ALQUILERES o cargo > 0) deduce Implemento.");
+        Check(ProductTypes.Normalize("implemento", "BEBIDAS", 0m) == ProductTypes.Implemento && ProductTypes.Normalize("Producto", "ALQUILERES", 5m) == ProductTypes.Producto &&
+              ProductTypes.Normalize(null, "ALQUILERES", 0m) == ProductTypes.Implemento && ProductTypes.Normalize("otro", "X", 0m) == ProductTypes.Producto,
+            "RF-14: el valor guardado manda; sin valor se deduce.");
+
+        var builder = new MySqlConnectionStringBuilder(connectionString);
+        var database = "edenpos_test_" + Guid.NewGuid().ToString("N");
+        builder.Database = "";
+        var originalConnection = Environment.GetEnvironmentVariable("EDENPOS_MYSQL_CONNECTION");
+        using (var admin = new MySqlConnection(builder.ConnectionString))
+        {
+            admin.Open();
+            Execute(admin, "CREATE DATABASE `" + database + "` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci");
+            try
+            {
+                builder.Database = database;
+                using (var connection = new MySqlConnection(builder.ConnectionString))
+                {
+                    connection.Open();
+                    var schema = File.ReadAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "schema.sql"));
+                    Execute(connection, schema.Substring(schema.IndexOf("CREATE TABLE rol", StringComparison.Ordinal)));
+                    // Base anterior a la migración 009: sin las tres columnas y con artículos que ya eran implementos por la regla anterior.
+                    Execute(connection, "ALTER TABLE producto DROP COLUMN tipo");
+                    Execute(connection, "ALTER TABLE cliente DROP COLUMN consentimiento_revocado");
+                    Execute(connection, "ALTER TABLE comprobante DROP COLUMN mensaje_respuesta");
+                    Execute(connection, "INSERT INTO producto (id_producto, categoria, nombre, precio, color_hex, cargo_perdida) VALUES " +
+                        "('toalla', 'ALQUILERES', 'TOALLA', 5, '#808080', 0), ('sandalia', 'VARIOS', 'SANDALIA', 3, '#808080', 8), " +
+                        "('agua', 'BEBIDAS', 'AGUA', 2, '#808080', 0)");
+                }
+                builder.AllowUserVariables = true;
+                Environment.SetEnvironmentVariable("EDENPOS_MYSQL_CONNECTION", builder.ConnectionString);
+                Func<string, object> scalar = sql =>
+                {
+                    using (var connection = new MySqlConnection(builder.ConnectionString))
+                    {
+                        connection.Open();
+                        using (var command = new MySqlCommand(sql, connection)) return command.ExecuteScalar();
+                    }
+                };
+                var columnsSql = "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND " +
+                                 "((TABLE_NAME = 'producto' AND COLUMN_NAME = 'tipo') OR (TABLE_NAME = 'cliente' AND COLUMN_NAME = 'consentimiento_revocado') OR " +
+                                 "(TABLE_NAME = 'comprobante' AND COLUMN_NAME = 'mensaje_respuesta'))";
+
+                // ---- RF-14: migración automática ----
+                AppData.Initialize();
+                Check(Convert.ToInt32(scalar(columnsSql)) == 3, "009: la migración agrega producto.tipo, cliente.consentimiento_revocado y comprobante.mensaje_respuesta.");
+                Func<string, string> tipoOf = id => Convert.ToString(scalar("SELECT tipo FROM producto WHERE id_producto = '" + id + "'"));
+                Check(tipoOf("toalla") == "Implemento" && tipoOf("sandalia") == "Implemento" && tipoOf("agua") == "Producto",
+                    "RF-14: la migración marca como Implemento ALQUILERES y los artículos con cargo por pérdida.");
+                scalar("UPDATE producto SET tipo = 'Producto' WHERE id_producto = 'toalla'");
+                AppData.Initialize();
+                Check(Convert.ToInt32(scalar(columnsSql)) == 3 && tipoOf("toalla") == "Producto",
+                    "RF-14: la migración es idempotente y no vuelve a cambiar lo que eligió la dueña.");
+                scalar("UPDATE producto SET tipo = 'Implemento' WHERE id_producto = 'toalla'");
+
+                var owner = AppData.Users.First(u => u.Role == UserRoles.Owner && u.Active);
+                var login = AppData.TryLogin(owner.Id, "0000");
+                Check(login.Outcome == AppData.LoginOutcome.Success, "FD03: debe iniciar sesión la dueña de la base de prueba.");
+                AppSession.SignIn(login.User);
+
+                var products = AppData.Products;
+                Check(products.First(p => p.Id == "toalla").IsImplement && AppData.IsImplement(products.First(p => p.Id == "sandalia")) &&
+                      !AppData.IsImplement(products.First(p => p.Id == "agua")), "RF-14: el diálogo de devolución solo ofrece artículos de tipo Implemento.");
+                // El cargo por pérdida solo vale para implementos (RN-07).
+                products.First(p => p.Id == "agua").CargoPerdida = 4m;
+                var rejected = false;
+                try { AppData.SaveProducts(products); } catch (ArgumentException ex) { rejected = ex.Message.Contains("implementos"); }
+                Check(rejected && Convert.ToDecimal(scalar("SELECT cargo_perdida FROM producto WHERE id_producto = 'agua'")) == 0m,
+                    "RF-14: un Producto no puede tener cargo por pérdida.");
+                products = AppData.Products;
+                var agua = products.First(p => p.Id == "agua");
+                agua.Tipo = ProductTypes.Implemento; agua.CargoPerdida = 4m;
+                AppData.SaveProducts(products);
+                Check(tipoOf("agua") == "Implemento" && Convert.ToDecimal(scalar("SELECT cargo_perdida FROM producto WHERE id_producto = 'agua'")) == 4m,
+                    "RF-14: el tipo se guarda desde el editor junto con su cargo.");
+                products = AppData.Products;
+                agua = products.First(p => p.Id == "agua");
+                agua.Tipo = ProductTypes.Producto; agua.CargoPerdida = 0m;
+                AppData.SaveProducts(products);
+                Check(tipoOf("agua") == "Producto" && !AppData.Products.First(p => p.Id == "agua").IsImplement, "RF-14: un implemento puede volver a ser Producto.");
+
+                // ---- RF-21: boletas no enviadas, reintento de una y de todas ----
+                if (AppData.OpenShift == null) AppData.OpenNewShift(0m);
+                AppData.SimularRechazoComprobantes = true;
+                Func<decimal, string, Receipt> sell = (amount, dni) => AppData.AddReceipt(
+                    new List<ReceiptLine> { new ReceiptLine { Name = "Servicio de prueba", UnitPrice = amount, Quantity = 1 } }, "ANA PEREZ", dni, "Efectivo", amount);
+                var small = sell(50m, "44444444");
+                var big = sell(800m, "44444444");
+                var other = sell(30m, "");
+                System.Threading.Thread.Sleep(300);   // deja terminar el envío en segundo plano de cada venta
+                var retry = AppData.ReintentarComprobantes(true);
+                Check(!retry.YaEnCurso && retry.Rechazados == 3 && retry.Aceptados == 0, "RF-21: con el rechazo simulado, el reintento deja las tres boletas rechazadas.");
+                var pending = AppData.GetComprobantesNoEnviados();
+                Check(pending.Count == 3 && pending.All(c => c.Estado == ComprobanteEstados.Rechazado && c.Intentos >= 1 &&
+                      c.CodigoRespuesta == EmisorElectronicoStub.CodigoRechazado && (c.MensajeRespuesta ?? "").Contains("simulado") && c.UltimoIntento.HasValue),
+                    "RF-21: la lista trae estado, intentos, último código, mensaje (simulado) y fecha del último intento.");
+                var bigPending = pending.First(c => c.ReceiptId == big.Id);
+                Check(bigPending.Total == 800m && bigPending.CustomerName == "ANA PEREZ" && bigPending.ReceiptNumber == big.Number,
+                    "RF-21: la lista trae número, cliente y total del recibo.");
+                AppData.SimularRechazoComprobantes = false;
+                Check(AppData.ProcesarComprobante(bigPending.Id, true) == ComprobanteEstados.Aceptado, "RF-21: 'Reintentar este' envía solo esa boleta.");
+                pending = AppData.GetComprobantesNoEnviados();
+                Check(pending.Count == 2 && pending.All(c => c.ReceiptId != big.Id), "RF-21: la lista se actualiza tras reintentar una boleta.");
+                Check(AppData.GetComprobante(big.Id).MensajeRespuesta.Contains("simulada"), "RF-21: el mensaje del último envío se guarda (aceptado de forma simulada).");
+                AppData.SimularRechazoComprobantes = true;
+                AppData.ReintentarComprobantes(true);
+                AppData.SimularRechazoComprobantes = false;
+                retry = AppData.ReintentarComprobantes(true);
+                Check(retry.Aceptados == 2 && AppData.GetComprobantesNoEnviados().Count == 0, "RF-21: 'Reintentar todos' envía las que quedaban y vacía la lista.");
+
+                // ---- RF-13: filtro por estado de envío y por fechas ----
+                var filter = typeof(AppData).Assembly.GetType("EdenPOS.ReceiptsView", true);
+                Func<string, DateTime?, DateTime?, List<Receipt>> filtered = (state, from, to) =>
+                    ((IEnumerable<Receipt>)Invoke(filter, null, "FilterReceipts", AppData.Receipts, state, from, to)).ToList();
+                scalar("UPDATE comprobante SET estado_envio = 'Rechazado' WHERE id_recibo = '" + small.Id + "'");
+                scalar("UPDATE comprobante SET estado_envio = 'Pendiente' WHERE id_recibo = '" + other.Id + "'");
+                scalar("UPDATE recibo SET created_at = DATE_SUB(created_at, INTERVAL 3 DAY) WHERE id_recibo = '" + other.Id + "'");
+                Check(filtered(null, null, null).Count == 3, "RF-13: sin filtros se ven todos los recibos.");
+                Check(filtered(ComprobanteEstados.Aceptado, null, null).Select(r => r.Id).SequenceEqual(new[] { big.Id }), "RF-13: filtro por Aceptado.");
+                Check(filtered(ComprobanteEstados.Rechazado, null, null).Select(r => r.Id).SequenceEqual(new[] { small.Id }), "RF-13: filtro por Rechazado.");
+                Check(filtered(ComprobanteEstados.Pendiente, null, null).Select(r => r.Id).SequenceEqual(new[] { other.Id }), "RF-13: filtro por Pendiente.");
+                Check(filtered(null, DateTime.Today, DateTime.Today).Count == 2 && filtered(null, null, DateTime.Today.AddDays(-1)).Select(r => r.Id).SequenceEqual(new[] { other.Id }),
+                    "RF-13: filtro por rango de fechas (extremos incluidos).");
+                Check(filtered(ComprobanteEstados.Pendiente, DateTime.Today, null).Count == 0, "RF-13: estado y fechas se combinan.");
+                scalar("UPDATE comprobante SET estado_envio = 'Aceptado' WHERE id_recibo IN ('" + small.Id + "', '" + other.Id + "')");
+
+                // ---- RNF-09 / RN-14: retiro del consentimiento ----
+                AppData.SaveCustomer("44444444", "Ana Pérez", "Prueba", "987654321", true);
+                scalar("INSERT INTO ticket_guardado (id_ticket, nombre, cliente_nombre, cliente_dni, adultos, ninos, created_at, updated_at) " +
+                       "VALUES ('ticketana', 'Ana', 'ANA PEREZ', '44444444', 1, 0, NOW(), NOW())");
+                AppSession.SignOut();
+                var denied = false;
+                try { AppData.RevokeCustomerConsent("44444444"); } catch (InvalidOperationException) { denied = true; }
+                Check(denied && AppData.FindCustomer("44444444") != null, "RNF-09: solo la dueña registra el retiro del consentimiento.");
+                AppSession.SignIn(login.User);
+                var revoked = AppData.RevokeCustomerConsent("44444444");
+                Check(revoked.ReceiptsAnonymized == 1 && revoked.ReceiptsKept == 1 && revoked.TicketsAnonymized == 1,
+                    "RNF-09: anonimiza el recibo de S/ 700 o menos y el ticket; conserva el recibo mayor a S/ 700.");
+                Check(AppData.FindCustomer("44444444") == null, "RNF-09: el DNI real ya no está en el registro de clientes.");
+                var anonymized = AppData.Customers.Single(c => c.ConsentRevokedAt.HasValue);
+                Check(AppData.IsAnonymizedDni(anonymized.Dni) && !Validation.IsValidDni(anonymized.Dni) && anonymized.Phone == "" && !anonymized.DataConsent &&
+                      anonymized.FullName == "ANA PÉREZ", "RNF-09: queda constancia con fecha de retiro, sin teléfono, sin consentimiento y con DNI anonimizado.");
+                Check(scalar("SELECT cliente_dni FROM recibo WHERE id_recibo = '" + small.Id + "'") is DBNull &&
+                      Convert.ToString(scalar("SELECT cliente_dni FROM recibo WHERE id_recibo = '" + big.Id + "'")) == "44444444" &&
+                      scalar("SELECT cliente_dni FROM ticket_guardado WHERE id_ticket = 'ticketana'") is DBNull,
+                    "RNF-09: los recibos mayores a S/ 700 conservan el documento (SUNAT).");
+                var detail = Convert.ToString(scalar("SELECT detalle FROM auditoria WHERE accion = 'CONSENTIMIENTO_RETIRADO' ORDER BY id_auditoria DESC LIMIT 1"));
+                Check(detail.Contains("ANA PÉREZ") && !detail.Contains("44444444"), "RNF-09: la auditoría registra CONSENTIMIENTO_RETIRADO sin el DNI.");
+                var again = false;
+                try { AppData.RevokeCustomerConsent(anonymized.Dni); } catch (InvalidOperationException) { again = true; }
+                Check(again, "RNF-09: no se puede retirar dos veces.");
+                var back = AppData.SaveCustomer("44444444", "Ana Pérez", "Prueba", null, true);
+                Check(back.DataConsent && !back.ConsentRevokedAt.HasValue && back.Phone == "", "RNF-09: si vuelve y acepta, se registra de nuevo desde cero.");
+                AppData.RegistrarExportacionDatos("Prueba de exportación");
+                Check(Convert.ToInt32(scalar("SELECT COUNT(*) FROM auditoria WHERE accion = 'DATOS_EXPORTADOS'")) == 1, "RNF-09: la exportación de datos queda en auditoría.");
+
+                // ---- Copias: la nueva lleva las columnas; una anterior a 009 se restaura con los valores por defecto y el tipo deducido ----
+                var current = Path.Combine(Path.GetTempPath(), "EdenPOS-fd03-" + Guid.NewGuid().ToString("N") + ".edenbackup");
+                var legacy = Path.Combine(Path.GetTempPath(), "EdenPOS-fd03-" + Guid.NewGuid().ToString("N") + ".edenbackup");
+                var legacyJson = Path.Combine(Path.GetTempPath(), "EdenPOS-fd03-" + Guid.NewGuid().ToString("N") + ".edenbackup");
+                try
+                {
+                    scalar("UPDATE producto SET tipo = 'Producto' WHERE id_producto = 'toalla'");   // decisión de la dueña que la copia nueva debe conservar
+                    AppData.ExportBackup(current);
+                    File.Copy(current, legacy);
+                    var serializer = new System.Web.Script.Serialization.JavaScriptSerializer();
+                    using (var zip = System.IO.Compression.ZipFile.Open(legacy, System.IO.Compression.ZipArchiveMode.Update))
+                    {
+                        foreach (var pair in new[] { new[] { "producto", "tipo" }, new[] { "cliente", "consentimiento_revocado" }, new[] { "comprobante", "mensaje_respuesta" } })
+                        {
+                            var entry = zip.GetEntry("tables/" + pair[0] + ".json");
+                            string json;
+                            using (var reader = new StreamReader(entry.Open(), Encoding.UTF8)) json = reader.ReadToEnd();
+                            var rows = serializer.Deserialize<List<Dictionary<string, object>>>(json);
+                            Check(rows.Count > 0 && rows.All(r => r.ContainsKey(pair[1])), "009: la copia de seguridad incluye " + pair[0] + "." + pair[1] + ".");
+                            foreach (var row in rows) row.Remove(pair[1]);
+                            entry.Delete();
+                            using (var writer = new StreamWriter(zip.CreateEntry("tables/" + pair[0] + ".json").Open(), new UTF8Encoding(false))) writer.Write(serializer.Serialize(rows));
+                        }
+                    }
+                    AppData.ImportBackup(legacy);
+                    Check(tipoOf("toalla") == "Implemento" && tipoOf("sandalia") == "Implemento" && tipoOf("agua") == "Producto" &&
+                          Convert.ToInt32(scalar("SELECT COUNT(*) FROM cliente WHERE consentimiento_revocado IS NOT NULL")) == 0 &&
+                          Convert.ToInt32(scalar("SELECT COUNT(*) FROM comprobante WHERE mensaje_respuesta IS NOT NULL")) == 0,
+                        "009: una copia anterior se restaura con valores por defecto y el tipo deducido por la regla anterior.");
+                    AppData.ImportBackup(current);
+                    Check(tipoOf("toalla") == "Producto" && Convert.ToInt32(scalar("SELECT COUNT(*) FROM cliente WHERE consentimiento_revocado IS NOT NULL")) == 1 &&
+                          Convert.ToInt32(scalar("SELECT COUNT(*) FROM comprobante WHERE mensaje_respuesta IS NOT NULL")) == 3,
+                        "009: una copia nueva conserva tipo, fecha de retiro y mensajes.");
+
+                    // ---- Importación de datos antiguos (JSON): clientes sin consentimiento no se importan ----
+                    using (var zip = System.IO.Compression.ZipFile.Open(legacyJson, System.IO.Compression.ZipArchiveMode.Create))
+                    {
+                        Action<string, string> add = (name, text) =>
+                        {
+                            using (var writer = new StreamWriter(zip.CreateEntry(name).Open(), new UTF8Encoding(false))) writer.Write(text);
+                        };
+                        add("settings.json", "{\"StoreName\":\"EDEN PRUEBA\",\"CurrencySymbol\":\"S/\",\"NextReceiptNumber\":1,\"NextShiftNumber\":1,\"Users\":[]}");
+                        add("catalog.json", "[{\"Id\":\"alq1\",\"Name\":\"TOALLA\",\"Category\":\"ALQUILERES\",\"Price\":5,\"ColorHex\":\"#808080\",\"Active\":true}," +
+                                            "{\"Id\":\"beb1\",\"Name\":\"AGUA\",\"Category\":\"BEBIDAS\",\"Price\":2,\"ColorHex\":\"#808080\",\"Active\":true}]");
+                        add("customers.json", "[{\"Dni\":\"55555555\",\"FullName\":\"SIN PERMISO\",\"Source\":\"Antiguo\",\"Phone\":\"911111111\",\"CreatedAt\":\"2025-01-01T10:00:00\",\"UpdatedAt\":\"2025-01-01T10:00:00\"}," +
+                                               "{\"Dni\":\"66666666\",\"FullName\":\"CON PERMISO\",\"Source\":\"Antiguo\",\"Phone\":\"922222222\",\"DataConsent\":true,\"CreatedAt\":\"2025-01-01T10:00:00\",\"UpdatedAt\":\"2025-01-02T10:00:00\"}]");
+                    }
+                    AppData.ImportBackup(legacyJson);
+                    var imported = AppData.Customers;
+                    Check(imported.Count == 1 && imported[0].Dni == "66666666" && imported[0].DataConsent && imported[0].Phone == "922222222" && imported[0].ConsentDate.HasValue,
+                        "RNF-09: la importación antigua solo guarda el DNI y el teléfono de clientes con consentimiento.");
+                    Check(tipoOf("alq1") == "Implemento" && tipoOf("beb1") == "Producto", "RF-14: la importación antigua deduce el tipo (ALQUILERES = Implemento).");
+                }
+                finally
+                {
+                    foreach (var path in new[] { current, legacy, legacyJson }) if (File.Exists(path)) File.Delete(path);
+                    AppSession.SignOut();
+                }
+                Console.WriteLine("SQL: RF-13, RF-21, RF-14 y RNF-09 (FD03) en una base temporal aislada.");
             }
             finally
             {

@@ -40,3 +40,11 @@ sesión, y verifican el rechazo de comandos sin su transacción y la reversión 
 escrituras no confirmadas.
 También verifica que la consulta de DNI conserve el registro local y devuelva
 el control de inmediato cuando el acceso a datos esté ocupado.
+La prueba FD03 (también con `EDENPOS_TEST_MYSQL_CONNECTION`) parte de una base sin
+las columnas de la migración 009 y comprueba: la migración de `producto.tipo`
+(ALQUILERES o cargo por pérdida pasan a Implemento), que un Producto no tenga cargo
+por pérdida, la lista de boletas no enviadas con reintento de una y de todas
+(emisor simulado), el filtro de recibos por estado de envío y fechas, el retiro del
+consentimiento (teléfono borrado, DNI anonimizado salvo en recibos mayores a S/ 700,
+auditoría sin el DNI), copias nuevas y anteriores a 009, y la importación de JSON
+antiguos sin guardar clientes que no dieron su consentimiento.

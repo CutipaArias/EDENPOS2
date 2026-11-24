@@ -35,6 +35,8 @@ namespace EdenPOS
         public string CodigoRespuesta { get; set; }
         public int Intentos { get; set; }
         public DateTime? UltimoIntento { get; set; }
+        // RF-21: último mensaje del emisor (simulado). null si aún no se envió.
+        public string MensajeRespuesta { get; set; }
         // Datos del recibo, útiles para el emisor (se rellenan al leer con ReadComprobantes).
         public int ReceiptNumber { get; set; }
         public decimal Total { get; set; }
@@ -182,7 +184,7 @@ namespace EdenPOS
         // RN-11: ventas con total (ya con descuento) mayor a este monto exigen DNI del cliente.
         public const decimal DniObligatorioDesde = 700m;
         public const string SerieBoleta = "B001";
-        private const string ComprobanteColumnas = "id_comprobante, id_recibo, serie, numero, fecha_emision, estado_envio, codigo_respuesta, intentos, ultimo_intento";
+        private const string ComprobanteColumnas = "id_comprobante, id_recibo, serie, numero, fecha_emision, estado_envio, codigo_respuesta, intentos, ultimo_intento, mensaje_respuesta";
         private static readonly object SendGate = new object();
         private static int retryRunning;
 
@@ -244,14 +246,15 @@ namespace EdenPOS
                 Estado = reader.GetString(5),
                 CodigoRespuesta = reader.IsDBNull(6) ? null : reader.GetString(6),
                 Intentos = Convert.ToInt32(reader.GetValue(7), CultureInfo.InvariantCulture),
-                UltimoIntento = reader.IsDBNull(8) ? (DateTime?)null : reader.GetDateTime(8)
+                UltimoIntento = reader.IsDBNull(8) ? (DateTime?)null : reader.GetDateTime(8),
+                MensajeRespuesta = reader.IsDBNull(9) ? null : reader.GetString(9)
             };
-            if (reader.FieldCount > 9)
+            if (reader.FieldCount > 10)
             {
-                c.ReceiptNumber = reader.GetInt32(9);
-                c.Total = reader.GetDecimal(10);
-                c.CustomerName = reader.GetString(11);
-                c.CustomerDni = reader.IsDBNull(12) ? "" : reader.GetString(12);
+                c.ReceiptNumber = reader.GetInt32(10);
+                c.Total = reader.GetDecimal(11);
+                c.CustomerName = reader.GetString(12);
+                c.CustomerDni = reader.IsDBNull(13) ? "" : reader.GetString(13);
             }
             return c;
         }
@@ -261,7 +264,7 @@ namespace EdenPOS
         {
             var list = new List<Comprobante>();
             using (var command = new MySqlCommand(
-                "SELECT c.id_comprobante, c.id_recibo, c.serie, c.numero, c.fecha_emision, c.estado_envio, c.codigo_respuesta, c.intentos, c.ultimo_intento, " +
+                "SELECT c.id_comprobante, c.id_recibo, c.serie, c.numero, c.fecha_emision, c.estado_envio, c.codigo_respuesta, c.intentos, c.ultimo_intento, c.mensaje_respuesta, " +
                 "r.numero, r.total, r.cliente_nombre, r.cliente_dni " +
                 "FROM comprobante c JOIN recibo r ON r.id_recibo = c.id_recibo " + where + " ORDER BY c.serie, c.numero", connection, transaction))
             {
@@ -357,6 +360,15 @@ namespace EdenPOS
                 return ReadComprobantes(connection, null, "", new Dictionary<string, object>());
         }
 
+        // RF-21: boletas no enviadas (Pendiente: aún sin respuesta o sin conexión; Rechazado: el emisor simulado las rechazó), de la más antigua
+        // a la más reciente, con los datos del recibo. Los anulados (recibo reembolsado) no se reintentan y no aparecen.
+        public static List<Comprobante> GetComprobantesNoEnviados()
+        {
+            lock (Sync)
+            using (var connection = SqlConnectionFactory.Open())
+                return ReadComprobantes(connection, null, "WHERE c.estado_envio IN ('Pendiente', 'Rechazado')", new Dictionary<string, object>());
+        }
+
         public static ResumenComprobantes GetComprobantesResumen()
         {
             var resumen = new ResumenComprobantes();
@@ -427,11 +439,12 @@ namespace EdenPOS
                     {
                         int updated;
                         using (var command = new MySqlCommand(
-                            "UPDATE comprobante SET estado_envio = @estado, codigo_respuesta = @codigo, intentos = LEAST(intentos + 1, 100), ultimo_intento = @fecha " +
+                            "UPDATE comprobante SET estado_envio = @estado, codigo_respuesta = @codigo, mensaje_respuesta = @mensaje, intentos = LEAST(intentos + 1, 100), ultimo_intento = @fecha " +
                             "WHERE id_comprobante = @id AND estado_envio IN ('Pendiente', 'Rechazado')", connection, transaction))
                         {
                             command.Parameters.AddWithValue("@estado", estadoFinal);
                             command.Parameters.AddWithValue("@codigo", string.IsNullOrEmpty(resultado.Codigo) ? (object)DBNull.Value : Clip(resultado.Codigo, 10));
+                            command.Parameters.AddWithValue("@mensaje", string.IsNullOrWhiteSpace(resultado.Mensaje) ? (object)DBNull.Value : Clip(resultado.Mensaje.Trim(), 200));
                             command.Parameters.AddWithValue("@fecha", NowWithoutFraction());
                             command.Parameters.AddWithValue("@id", comprobante.Id);
                             updated = command.ExecuteNonQuery();
