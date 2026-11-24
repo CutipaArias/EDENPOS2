@@ -86,12 +86,16 @@ la cadena de conexión intente cambiar esas opciones.
 | RF-01 Autenticar usuarios | Inicio de sesión | `LoginForm.cs`, `AppData.TryLogin` (bloqueo tras 5 intentos) y cierre por inactividad en `MainForm.cs` |
 | RF-02 Usuarios y roles | Configuración → Usuarios | `UserManagement.cs` |
 | RF-03, RF-04, RF-05 Caja | Turno | `ShiftView.cs`, `AppData.OpenNewShift` / `CloseShift` |
+| RN-09 Observación obligatoria si la caja no cuadra | Turno → Cerrar turno, Reportes → Caja y Auditoría | `AppData.CloseShift` (columna `sesion_caja.observacion_cierre`) |
 | RF-06 Registrar cliente (RN-14, RNF-09) | Ventas (DNI, nombre, teléfono y casilla de consentimiento) | `SalesView.cs`, `AppData.SaveCustomer` (DNI y teléfono solo con consentimiento, Ley N.º 29733), `Validation.IsValidPhone` |
 | RF-07 a RF-10 Visita, casilleros, consumos y cobro | Ventas | `SalesView.cs`, `Dialogs.cs`, `AppData.AddReceipt` |
+| RF-20 Visitas activas: tiempo y saldo | Ventas → Tickets guardados | `Dialogs.cs` (`SavedTicketsDialog`, columnas Tiempo y Por cobrar) |
+| RN-12 Reembolsos y ajustes solo de la dueña, con motivo | Recibos → Reembolsar, Inventario → Registrar salida | `AppData.RefundReceipt`, `AppData.AddInventoryAdjustment` |
 | RF-11 Promociones | Cobro y Configuración → Promociones | `Promotions.cs` |
 | RF-12, RF-13, RF-21 Boletas (simuladas) | Recibos y Configuración → Facturación | `ElectronicInvoicing.cs` |
 | RF-12 / RNF-07 Impresión del recibo en la térmica de 80 mm | Recibos → Imprimir, cobro en Ventas y Configuración → Impresora | `ReceiptPrinting.cs` (tabla `impresora_pc` por PC, `devdb/migraciones/006_rf12_impresora.sql`) |
 | RF-14 a RF-16 Inventario y stock mínimo | Inventario | `ProductsView.cs` |
+| RF-15 Pérdidas, consumo interno y ajustes con motivo | Inventario → Registrar salida, Reportes → Inventario | `ProductsView.cs` (`InventoryAdjustmentDialog`), `AppData.AddInventoryAdjustment` |
 | RF-17 Reportes | Reportes | `Reports.cs`, `ReportsView.cs` |
 | RF-18 Respaldos | Configuración → Copias de seguridad | `AutoBackup.cs`, `SupabaseReplica.cs` |
 | RF-19, RN-06, RN-07 y RF-22 (cargos por pérdida) Devolución de llaves e implementos | Cobro de un ticket con llaves, Configuración → Cargos por pérdida e Inventario → Editar artículo | `KeyReturns.cs`, `KeyReturnDialog.cs`, `AppData.AddReceipt` (valida los cargos; las llaves no devueltas quedan fuera de uso hasta que la dueña las libera) |
