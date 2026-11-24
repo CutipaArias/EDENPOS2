@@ -11,7 +11,7 @@ Punto de venta táctil para Windows del **Sauna El Edén Cono Sur** (Tacna). Pro
 - **Ventas:** catálogo por categorías, variantes, tickets guardados con candados (1–35), adultos/niños, cobro en efectivo, Yape o mixto.
 - **Promociones:** sexta visita gratis y descuento grupal/familiar (configurables, no acumulables).
 - **Comprobantes:** facturación electrónica **simulada** con reintentos; las ventas mayores a S/ 700 exigen el documento del cliente.
-- **Recibos:** búsqueda, detalle, reembolso y resumen por día.
+- **Recibos:** búsqueda, filtros por estado de envío de la boleta y por fechas, boletas no enviadas con reintento, detalle, reembolso y resumen por día.
 - **Turno y caja:** apertura y cierre, sin cobros con la caja cerrada, movimientos de caja en efectivo o Yape, efectivo y Yape esperados, proyección del disponible y diferencia por medio de pago.
 - **Inventario:** productos y variantes, entradas, stock mínimo con alerta.
 - **Reportes** de caja, ventas e inventario por rango de fechas, y pantalla de **Auditoría** de operaciones sensibles.
@@ -95,15 +95,19 @@ la cadena de conexión intente cambiar esas opciones.
 | RF-20 Visitas activas: tiempo y saldo | Ventas → Tickets guardados | `Dialogs.cs` (`SavedTicketsDialog`, columnas Tiempo y Por cobrar) |
 | RN-12 Reembolsos y ajustes solo de la dueña, con motivo | Recibos → Reembolsar, Inventario → Registrar salida | `AppData.RefundReceipt`, `AppData.AddInventoryAdjustment` |
 | RF-11 Promociones | Cobro y Configuración → Promociones | `Promotions.cs` |
-| RF-12, RF-13, RF-21 Boletas (simuladas) | Recibos y Configuración → Facturación | `ElectronicInvoicing.cs` |
+| RF-12 Boletas (simuladas) | Recibos y Configuración → Facturación | `ElectronicInvoicing.cs` |
+| RF-13 Consultar recibos y boletas | Recibos: búsqueda por número, DNI, cliente o pago, filtro por estado de envío de la boleta (Aceptado, Pendiente, Rechazado) y rango de fechas | `ReceiptsView.cs` (`FilterReceipts`) |
+| RF-21 Boletas no enviadas y reintento | Recibos → Boletas no enviadas y Configuración → Facturación → Ver boletas no enviadas (número, fecha, cliente, total, estado, intentos, último código y mensaje; Reintentar este / Reintentar todos). El reintento automático sigue cada 5 minutos | `PendingInvoicesDialog.cs`, `AppData.GetComprobantesNoEnviados`, `ProcesarComprobante`, `ReintentarComprobantes` (columna `comprobante.mensaje_respuesta`) |
 | RF-12 / RNF-07 Impresión del recibo en la térmica de 80 mm | Recibos → Imprimir, cobro en Ventas y Configuración → Impresora | `ReceiptPrinting.cs` (tabla `impresora_pc` por PC, `devdb/migraciones/006_rf12_impresora.sql`) |
 | RF-14 a RF-16 Inventario y stock mínimo | Inventario | `ProductsView.cs` |
+| RF-14 Tipo de artículo: Producto o Implemento | Inventario (columna Tipo) → Editar artículo | `ProductsView.cs`, `ProductTypes` en `Models.cs` (columna `producto.tipo`; solo los implementos tienen cargo por pérdida y se revisan al cobrar la visita) |
 | RF-15 Pérdidas, consumo interno y ajustes con motivo | Inventario → Registrar salida, Reportes → Inventario | `ProductsView.cs` (`InventoryAdjustmentDialog`), `AppData.AddInventoryAdjustment` |
 | RF-17 Reportes | Reportes | `Reports.cs`, `ReportsView.cs` |
 | RF-18 Respaldos | Configuración → Copias de seguridad | `AutoBackup.cs`, `SupabaseReplica.cs` |
 | RF-19, RN-06, RN-07 y RF-22 (cargos por pérdida) Devolución de llaves e implementos | Cobro de un ticket con llaves, Configuración → Cargos por pérdida e Inventario → Editar artículo | `KeyReturns.cs`, `KeyReturnDialog.cs`, `AppData.AddReceipt` (valida los cargos; las llaves no devueltas quedan fuera de uso hasta que la dueña las libera) |
 | RNF-03 Seguridad del PIN | — | `Security.cs` (PBKDF2 con sal) |
 | RNF-04 Trazabilidad | Auditoría | `AuditView.cs`, `AppData.RegistrarAuditoria` (todo cierre de caja queda como `CAJA_CERRADA` con esperado y contado de efectivo y Yape; si no cuadra, además `CAJA_DIFERENCIA`) |
+| RNF-09 / RN-14 Retiro del consentimiento y protección de datos | Configuración → Clientes → Buscar cliente → Retirar consentimiento (solo la dueña) | `CustomerPrivacy.cs`, `CustomerPrivacyDialog.cs`: borra el teléfono y anonimiza el DNI (los recibos mayores a S/ 700 lo conservan por SUNAT), columna `cliente.consentimiento_revocado`, auditoría `CONSENTIMIENTO_RETIRADO`; la exportación manual de copias queda como `DATOS_EXPORTADOS` y la importación de datos antiguos no guarda clientes sin consentimiento |
 
 ## Capturas
 

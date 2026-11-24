@@ -86,7 +86,7 @@ namespace EdenPOS
             Theme.StyleGrid(grid);
             grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Category", HeaderText = "Categoría", Width = 150, AutoSizeMode = DataGridViewAutoSizeColumnMode.None });
             grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Name", HeaderText = "Producto / variante", FillWeight = 190 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Type", HeaderText = "Tipo", Width = 110, AutoSizeMode = DataGridViewAutoSizeColumnMode.None });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Type", HeaderText = "Tipo", Width = 170, AutoSizeMode = DataGridViewAutoSizeColumnMode.None });
             grid.Columns.Add(NumberColumn("Entry", "Entrada hoy", 130));
             grid.Columns.Add(NumberColumn("Exit", "Salidas hoy", 130));
             grid.Columns.Add(NumberColumn("Balance", "Saldo", 120));
@@ -206,7 +206,8 @@ namespace EdenPOS
                 var entryCount = InventoryActivity.Count(activity.Entries, product.Id);
                 var exitCount = InventoryActivity.Count(activity.Exits, product.Id);
                 var balance = product.TrackInventory ? product.Stock.ToString() : "—";
-                var type = options.Count > 0 ? "Grupo · " + options.Count : "Artículo";
+                // RF-14: Producto o Implemento; en un grupo se agrega cuántas variantes tiene.
+                var type = product.Tipo + (options.Count > 0 ? " · " + options.Count + (options.Count == 1 ? " variante" : " variantes") : "");
                 var row = grid.Rows.Add(product.Category, product.Name, type, entryCount, exitCount, balance, Theme.Money(product.Price));
                 var productSelection = new InventorySelection { Product = product };
                 var productRow = grid.Rows[row];
@@ -401,6 +402,7 @@ namespace EdenPOS
                     stored.TrackInventory = dialog.Product.TrackInventory;
                     stored.StockMinimo = dialog.Product.StockMinimo;
                     stored.CargoPerdida = dialog.Product.CargoPerdida;
+                    stored.Tipo = dialog.Product.Tipo;
                 }
                 if (!TrySaveProducts(products)) return;
                 RefreshView();
@@ -862,6 +864,7 @@ namespace EdenPOS
         private readonly ComboBox category;
         private readonly NumericUpDown price;
         private readonly NumericUpDown cargoPerdida;
+        private readonly ComboBox tipo;
         private readonly CheckBox trackInventoryCheck;
         private readonly NumericUpDown stockMinimo;
         private readonly EdenField stockMinimoField;
@@ -877,11 +880,13 @@ namespace EdenPOS
 
         public Product Product { get; private set; }
 
+        private bool IsImplementSelected { get { return (tipo.SelectedItem as string) == ProductTypes.Implemento; } }
+
         public ProductEditorDialog(Product existing, IEnumerable<string> categories)
         {
             Text = existing == null ? "Nuevo artículo" : "Editar artículo";
             const int sideWidth = 238, m = InventoryDialogKit.Margin, w = 408;
-            InventoryDialogKit.Setup(this, sideWidth + m + w + m, 560);
+            InventoryDialogKit.Setup(this, sideWidth + m + w + m, 638);
             existingActive = existing == null || existing.Active;
             existingTrackInventory = existing != null && existing.TrackInventory;
             existingStock = existing == null ? 0 : existing.Stock;
@@ -920,6 +925,12 @@ namespace EdenPOS
             EdenField priceField;
             var priceTop = y + Theme.Space.Lg;
             y = InventoryDialogKit.AddField(this, "Precio (S/)", price, x, priceTop, 190, out priceField);
+            // RF-14: Producto (se vende o se consume) o Implemento (se presta y se devuelve). Solo los implementos se revisan al finalizar la visita.
+            tipo = Theme.Combo();
+            tipo.Items.AddRange(new object[] { ProductTypes.Producto, ProductTypes.Implemento });
+            tipo.SelectedItem = existing == null ? ProductTypes.Infer(category.Text, 0m) : ProductTypes.Normalize(existing.Tipo, existing.Category, existing.CargoPerdida);
+            EdenField tipoField;
+            InventoryDialogKit.AddField(this, "Tipo de artículo", tipo, x + 190 + Theme.Space.Lg, priceTop, w - 190 - Theme.Space.Lg, out tipoField);
             // RN-07 / RF-22: lo que se cobra por unidad si el cliente no devuelve este implemento (0 = sin cargo, pero se registra igual).
             cargoPerdida = new NumericUpDown
             {
@@ -927,7 +938,18 @@ namespace EdenPOS
                 Value = existing == null ? 0 : Math.Max(0, Math.Min(AppData.CargoPerdidaMaximo, existing.CargoPerdida))
             };
             EdenField cargoField;
-            InventoryDialogKit.AddField(this, "Cargo por pérdida (S/)", cargoPerdida, x + 190 + Theme.Space.Lg, priceTop, w - 190 - Theme.Space.Lg, out cargoField);
+            var cargoTop = y + Theme.Space.Lg;
+            y = InventoryDialogKit.AddField(this, "Cargo por pérdida (S/)", cargoPerdida, x, cargoTop, 190, out cargoField);
+            var cargoNote = InventoryDialogKit.AddNote(this, "", x + 190 + Theme.Space.Lg, cargoTop + 22, w - 190 - Theme.Space.Lg, Theme.Dim.Field);
+            Action syncCargo = () =>
+            {
+                var isImplement = IsImplementSelected;
+                cargoField.Enabled = isImplement;
+                if (!isImplement) cargoPerdida.Value = 0;
+                cargoNote.Text = isImplement ? "Se cobra por cada unidad que el cliente no devuelva." : "Solo los implementos tienen cargo por pérdida.";
+            };
+            tipo.SelectedIndexChanged += (s, e) => syncCargo();
+            syncCargo();
 
             // Grupo de inventario: casilla + mínimo juntos, con su explicación.
             var group = new CardPanel { BackColor = Theme.Canvas, Location = new Point(x, y + Theme.Space.Xl), Size = new Size(w, 168), Padding = new Padding(1) };
@@ -1013,7 +1035,8 @@ namespace EdenPOS
                 Active = existingActive,
                 TrackInventory = trackInventoryCheck.Checked,
                 StockMinimo = trackInventoryCheck.Checked ? (int)stockMinimo.Value : 0,
-                CargoPerdida = Math.Round(cargoPerdida.Value, 2),
+                CargoPerdida = IsImplementSelected ? Math.Round(cargoPerdida.Value, 2) : 0m,
+                Tipo = IsImplementSelected ? ProductTypes.Implemento : ProductTypes.Producto,
                 Stock = existingStock,
                 InitialStock = existingInitialStock
             };

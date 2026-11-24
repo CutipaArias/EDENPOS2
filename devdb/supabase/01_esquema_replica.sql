@@ -74,6 +74,8 @@ CREATE TABLE IF NOT EXISTS edenpos.cliente (
 ALTER TABLE edenpos.cliente ADD COLUMN IF NOT EXISTS telefono varchar(15) NULL;
 ALTER TABLE edenpos.cliente ADD COLUMN IF NOT EXISTS consentimiento_datos boolean NOT NULL DEFAULT false;
 ALTER TABLE edenpos.cliente ADD COLUMN IF NOT EXISTS consentimiento_fecha timestamp without time zone NULL;
+-- Fecha en que el cliente retiró su consentimiento (RNF-09 / RN-14). Por ahora la app NO la replica (trabajo local); la columna queda lista.
+ALTER TABLE edenpos.cliente ADD COLUMN IF NOT EXISTS consentimiento_revocado timestamp without time zone NULL;
 
 CREATE TABLE IF NOT EXISTS edenpos.producto (
   id_producto varchar(32) NOT NULL PRIMARY KEY,
@@ -91,6 +93,8 @@ CREATE TABLE IF NOT EXISTS edenpos.producto (
 
 -- Cargo por pérdida del implemento (RF-19 / RN-07). Por ahora la app NO lo replica (trabajo local); la columna queda lista.
 ALTER TABLE edenpos.producto ADD COLUMN IF NOT EXISTS cargo_perdida numeric(10,2) NOT NULL DEFAULT 0;
+-- Tipo de artículo: Producto o Implemento (RF-14). Por ahora la app NO lo replica (trabajo local); la columna queda lista.
+ALTER TABLE edenpos.producto ADD COLUMN IF NOT EXISTS tipo varchar(12) NOT NULL DEFAULT 'Producto';
 
 CREATE TABLE IF NOT EXISTS edenpos.producto_variante (
   id_variante varchar(32) NOT NULL PRIMARY KEY,
@@ -209,6 +213,9 @@ CREATE TABLE IF NOT EXISTS edenpos.comprobante (
   intentos smallint NOT NULL DEFAULT 0,
   ultimo_intento timestamp without time zone NULL
 );
+
+-- Último mensaje del emisor SIMULADO (RF-21). Por ahora la app NO lo replica (trabajo local); la columna queda lista.
+ALTER TABLE edenpos.comprobante ADD COLUMN IF NOT EXISTS mensaje_respuesta varchar(200) NULL;
 
 CREATE TABLE IF NOT EXISTS edenpos.movimiento_inventario (
   id_movimiento varchar(32) NOT NULL PRIMARY KEY,

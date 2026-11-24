@@ -103,12 +103,32 @@ namespace EdenPOS
                 AddColumnIfMissing(connection, existing, "configuracion", "llaves_fuera_uso", "VARCHAR(120) NOT NULL DEFAULT ''");
                 existing = ReadColumnNames(connection, "producto");
                 AddColumnIfMissing(connection, existing, "producto", "cargo_perdida", "DECIMAL(10,2) NOT NULL DEFAULT 0");
+                // RF-14: tipo de artículo, Producto o Implemento (devdb/migraciones/009). Solo cuando la columna se acaba de crear se marcan como
+                // Implemento los artículos que ya lo eran con la regla anterior (ALQUILERES o cargo por pérdida > 0); después manda lo que elija la dueña.
+                if (!existing.Contains("tipo"))
+                {
+                    AddColumnIfMissing(connection, existing, "producto", "tipo", "VARCHAR(12) NOT NULL DEFAULT 'Producto'");
+                    MarkLegacyImplements(connection, null);
+                }
                 // RF-06 / RN-14 / RNF-09: teléfono opcional y consentimiento de datos del cliente (devdb/migraciones/004).
                 existing = ReadColumnNames(connection, "cliente");
                 AddColumnIfMissing(connection, existing, "cliente", "telefono", "VARCHAR(15) NULL");
                 AddColumnIfMissing(connection, existing, "cliente", "consentimiento_datos", "TINYINT(1) NOT NULL DEFAULT 0");
                 AddColumnIfMissing(connection, existing, "cliente", "consentimiento_fecha", "DATETIME NULL");
+                // RNF-09 / RN-14: fecha en que el cliente retiró su consentimiento (devdb/migraciones/009).
+                AddColumnIfMissing(connection, existing, "cliente", "consentimiento_revocado", "DATETIME NULL");
+                // RF-21: último mensaje del emisor simulado, para la lista de boletas no enviadas (devdb/migraciones/009).
+                existing = ReadColumnNames(connection, "comprobante");
+                AddColumnIfMissing(connection, existing, "comprobante", "mensaje_respuesta", "VARCHAR(200) NULL");
             }
+        }
+
+        // RF-14: regla anterior a producto.tipo. Idempotente; solo convierte a Implemento (nunca al revés).
+        private static void MarkLegacyImplements(MySqlConnection connection, MySqlTransaction transaction)
+        {
+            using (var command = new MySqlCommand(
+                "UPDATE producto SET tipo = 'Implemento' WHERE tipo <> 'Implemento' AND (cargo_perdida > 0 OR UPPER(TRIM(categoria)) = 'ALQUILERES')", connection, transaction))
+                command.ExecuteNonQuery();
         }
 
         private static HashSet<string> ReadColumnNames(MySqlConnection connection, string table)
@@ -193,7 +213,7 @@ namespace EdenPOS
         // Huella del catálogo (definición, sin stock) vista por este proceso en su última lectura de Products. null = aún no leída.
         private static string catalogFingerprint;
 
-        // SHA-256 de la definición del catálogo: ids, categoría, nombre, precio, imagen, color, activo, stock mínimo y variantes (nombre, orden,
+        // SHA-256 de la definición del catálogo: ids, categoría, nombre, precio, imagen, color, activo, stock mínimo, cargo, tipo y variantes (nombre, orden,
         // precio, stock mínimo). NO incluye stock, stock inicial ni controla_inventario: ventas y entradas de inventario (que cambian solo eso)
         // no deben provocar falsos conflictos. Con lockRows bloquea las filas leídas (FOR UPDATE) hasta el fin de la transacción.
         private static string ComputeCatalogFingerprint(MySqlConnection connection, MySqlTransaction transaction, bool lockRows)
@@ -201,14 +221,14 @@ namespace EdenPOS
             var lockClause = lockRows ? " FOR UPDATE" : "";
             var text = new StringBuilder();
             using (var command = new MySqlCommand(
-                "SELECT id_producto, categoria, nombre, precio, imagen, color_hex, activo, stock_minimo, cargo_perdida FROM producto ORDER BY id_producto" + lockClause, connection, transaction))
+                "SELECT id_producto, categoria, nombre, precio, imagen, color_hex, activo, stock_minimo, cargo_perdida, tipo FROM producto ORDER BY id_producto" + lockClause, connection, transaction))
             using (var reader = command.ExecuteReader())
                 while (reader.Read())
                     text.Append("P|").Append(reader.GetString(0)).Append('|').Append(reader.GetString(1)).Append('|').Append(reader.GetString(2)).Append('|')
                         .Append(reader.GetDecimal(3).ToString("0.00", CultureInfo.InvariantCulture)).Append('|')
                         .Append(reader.IsDBNull(4) ? "" : reader.GetString(4)).Append('|').Append(reader.GetString(5)).Append('|')
                         .Append(reader.GetBoolean(6) ? "1" : "0").Append('|').Append(reader.GetInt32(7).ToString(CultureInfo.InvariantCulture)).Append('|')
-                        .Append(reader.GetDecimal(8).ToString("0.00", CultureInfo.InvariantCulture)).Append('\n');
+                        .Append(reader.GetDecimal(8).ToString("0.00", CultureInfo.InvariantCulture)).Append('|').Append(reader.GetString(9)).Append('\n');
             using (var command = new MySqlCommand(
                 "SELECT id_variante, id_producto, nombre, orden, precio, stock_minimo FROM producto_variante ORDER BY id_variante" + lockClause, connection, transaction))
             using (var reader = command.ExecuteReader())
@@ -1522,7 +1542,7 @@ namespace EdenPOS
                         "ON DUPLICATE KEY UPDATE nombre_completo = VALUES(nombre_completo), origen = VALUES(origen), " +
                         (normalizedPhone == null ? "" : "telefono = VALUES(telefono), ") +
                         "consentimiento_fecha = IF(consentimiento_datos = 1 AND consentimiento_fecha IS NOT NULL, consentimiento_fecha, VALUES(consentimiento_fecha)), " +
-                        "consentimiento_datos = 1, updated_at = VALUES(updated_at)",
+                        "consentimiento_datos = 1, consentimiento_revocado = NULL, updated_at = VALUES(updated_at)",
                         new Dictionary<string, object>
                         {
                             { "@dni", normalized },
@@ -1557,7 +1577,7 @@ namespace EdenPOS
         private static Customer ReadCustomer(MySqlConnection connection, string dni)
         {
             using (var command = new MySqlCommand(
-                "SELECT dni, nombre_completo, origen, created_at, updated_at, telefono, consentimiento_datos, consentimiento_fecha FROM cliente WHERE dni = @dni", connection))
+                "SELECT dni, nombre_completo, origen, created_at, updated_at, telefono, consentimiento_datos, consentimiento_fecha, consentimiento_revocado FROM cliente WHERE dni = @dni", connection))
             {
                 command.Parameters.AddWithValue("@dni", dni ?? "");
                 using (var reader = command.ExecuteReader())
@@ -1570,7 +1590,7 @@ namespace EdenPOS
             var customers = new List<Customer>();
             using (var connection = SqlConnectionFactory.Open())
             using (var command = new MySqlCommand(
-                "SELECT dni, nombre_completo, origen, created_at, updated_at, telefono, consentimiento_datos, consentimiento_fecha FROM cliente ORDER BY created_at, dni", connection))
+                "SELECT dni, nombre_completo, origen, created_at, updated_at, telefono, consentimiento_datos, consentimiento_fecha, consentimiento_revocado FROM cliente ORDER BY created_at, dni", connection))
             using (var reader = command.ExecuteReader())
             {
                 while (reader.Read()) customers.Add(CustomerFromReader(reader));
@@ -1589,7 +1609,8 @@ namespace EdenPOS
                 UpdatedAt = reader.GetDateTime(4),
                 Phone = reader.IsDBNull(5) ? "" : reader.GetString(5),
                 DataConsent = !reader.IsDBNull(6) && Convert.ToInt32(reader.GetValue(6), CultureInfo.InvariantCulture) != 0,
-                ConsentDate = reader.IsDBNull(7) ? (DateTime?)null : reader.GetDateTime(7)
+                ConsentDate = reader.IsDBNull(7) ? (DateTime?)null : reader.GetDateTime(7),
+                ConsentRevokedAt = reader.IsDBNull(8) ? (DateTime?)null : reader.GetDateTime(8)
             };
         }
 
@@ -1910,7 +1931,7 @@ namespace EdenPOS
             var lockClause = forUpdate ? " FOR UPDATE" : "";
             {
                 using (var command = new MySqlCommand(
-                    "SELECT id_producto, categoria, nombre, precio, imagen, color_hex, activo, controla_inventario, stock, stock_inicial, stock_minimo, cargo_perdida " +
+                    "SELECT id_producto, categoria, nombre, precio, imagen, color_hex, activo, controla_inventario, stock, stock_inicial, stock_minimo, cargo_perdida, tipo " +
                     "FROM producto ORDER BY categoria, nombre" + lockClause, connection, transaction))
                 using (var reader = command.ExecuteReader())
                 {
@@ -1932,6 +1953,7 @@ namespace EdenPOS
                             CargoPerdida = reader.GetDecimal(11),
                             Options = new List<ProductOption>()
                         };
+                        product.Tipo = ProductTypes.Normalize(reader.GetString(12), product.Category, product.CargoPerdida);
                         products.Add(product);
                         byId[product.Id] = product;
                     }
@@ -2031,6 +2053,10 @@ namespace EdenPOS
                     throw new ArgumentException("La ruta de imagen de \"" + product.Name + "\" es demasiado larga.");
                 if (product.CargoPerdida < 0m || product.CargoPerdida > CargoPerdidaMaximo)
                     throw new ArgumentException("El cargo por pérdida de \"" + product.Name + "\" debe estar entre 0 y " + CargoPerdidaMaximo.ToString("0", CultureInfo.InvariantCulture) + ".");
+                // RF-14 / RN-07: el cargo por pérdida solo tiene sentido en un implemento (lo que se presta y se devuelve).
+                product.Tipo = ProductTypes.Normalize(product.Tipo, product.Category, product.CargoPerdida);
+                if (product.Tipo != ProductTypes.Implemento && product.CargoPerdida > 0m)
+                    throw new ArgumentException("\"" + product.Name + "\" es de tipo Producto: el cargo por pérdida solo se aplica a los implementos. Cambie el tipo o deje el cargo en 0.");
                 if (!seenIds.Add(product.Id)) throw new InvalidOperationException("Hay artículos repetidos en la lista.");
                 if (!seenNames.Add((product.Category ?? "") + "\u0001" + product.Name))
                     throw new InvalidOperationException("Ya existe un artículo \"" + product.Name + "\" en la categoría " + (product.Category ?? "") + ".");
@@ -2088,7 +2114,8 @@ namespace EdenPOS
                             { "@stock", product.Stock },
                             { "@inicial", product.InitialStock },
                             { "@minimo", Math.Max(0, product.StockMinimo) },
-                            { "@cargo", Math.Round(product.CargoPerdida, 2) }
+                            { "@cargo", Math.Round(product.CargoPerdida, 2) },
+                            { "@tipo", product.Tipo }
                         };
                         decimal previousPrice;
                         if (existingProducts.TryGetValue(product.Id, out previousPrice))
@@ -2107,12 +2134,12 @@ namespace EdenPOS
                             // stock y stock_inicial de filas existentes NO se escriben aquí: solo cambian por entradas, ventas y reembolsos (PersistStockChanges).
                             Execute(connection, transaction,
                                 "UPDATE producto SET categoria = @categoria, nombre = @nombre, precio = @precio, imagen = @imagen, color_hex = @color, " +
-                                "activo = @activo, controla_inventario = @controla, stock_minimo = @minimo, cargo_perdida = @cargo WHERE id_producto = @id", values);
+                                "activo = @activo, controla_inventario = @controla, stock_minimo = @minimo, cargo_perdida = @cargo, tipo = @tipo WHERE id_producto = @id", values);
                         }
                         else
                             Execute(connection, transaction,
-                                "INSERT INTO producto (id_producto, categoria, nombre, precio, imagen, color_hex, activo, controla_inventario, stock, stock_inicial, stock_minimo, cargo_perdida) " +
-                                "VALUES (@id, @categoria, @nombre, @precio, @imagen, @color, @activo, @controla, @stock, @inicial, @minimo, @cargo)", values);
+                                "INSERT INTO producto (id_producto, categoria, nombre, precio, imagen, color_hex, activo, controla_inventario, stock, stock_inicial, stock_minimo, cargo_perdida, tipo) " +
+                                "VALUES (@id, @categoria, @nombre, @precio, @imagen, @color, @activo, @controla, @stock, @inicial, @minimo, @cargo, @tipo)", values);
                     }
 
                     foreach (var product in products)
@@ -2730,8 +2757,10 @@ namespace EdenPOS
                     {
                         var name = reader.GetName(index);
                         // El bloqueo de cuentas (RF-01) es estado local de seguridad: no va en la copia, así al restaurar no se reimponen bloqueos viejos.
-                        // Las demás columnas nuevas (p. ej. cliente.telefono, producto.cargo_perdida, sesion_caja.observacion_cierre, sesion_caja.yape_esperado/yape_contado, movimiento_caja.medio,
-                        // configuracion.cargo_perdida_llave) son datos del negocio y SÍ van: por eso una copia nueva no se puede restaurar en una
+                        // Las demás columnas nuevas (p. ej. cliente.telefono, producto.cargo_perdida, sesion_caja.observacion_cierre,
+                        // sesion_caja.yape_esperado/yape_contado, movimiento_caja.medio, configuracion.cargo_perdida_llave, producto.tipo,
+                        // cliente.consentimiento_revocado, comprobante.mensaje_respuesta)
+                        // son datos del negocio y SÍ van: por eso una copia nueva no se puede restaurar en una
                         // versión anterior de Edén POS (la restauración rechaza columnas desconocidas). Al revés sí: una copia antigua se restaura
                         // aquí y las columnas que le faltan toman su valor por defecto.
                         if (table == "usuario" && (name == "intentos_fallidos" || name == "bloqueado_en")) continue;
@@ -3070,6 +3099,10 @@ namespace EdenPOS
                             }
                         }
                     }
+                    // RF-14: una copia anterior a producto.tipo (o la réplica de Supabase, que aún no lo sube) deja todo como Producto por defecto;
+                    // se aplica la misma regla de la migración para no perder los implementos.
+                    var productRows = tables["producto"];
+                    if (productRows.Count > 0 && !productRows[0].ContainsKey("tipo")) MarkLegacyImplements(connection, transaction);
                     RegistrarAuditoria(connection, transaction, AuditActions.CopiaRestaurada,
                         "Restauración de copia: " + total + " filas en " + BackupTables.Length + " tablas");
                     transaction.Commit();

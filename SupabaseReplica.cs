@@ -1217,7 +1217,13 @@ namespace EdenPOS
                                                // RF-19 / RN-06 / RN-07: cargos por pérdida y llaves fuera de uso, por ahora solo en la base local
                                                // (Supabase aún puede no tener las columnas; devdb/supabase/01_esquema_replica.sql ya las agrega).
                                                !(name == "configuracion" && (c.Key == "cargo_perdida_llave" || c.Key == "llaves_fuera_uso")) &&
-                                               !(name == "producto" && c.Key == "cargo_perdida")).ToList();
+                                               !(name == "producto" && c.Key == "cargo_perdida") &&
+                                               // RF-14 / RNF-09 / RF-21 (devdb/migraciones/009): tipo de artículo, fecha de retiro del consentimiento y
+                                               // último mensaje del emisor simulado, por ahora solo en la base local (01_esquema_replica.sql ya las agrega).
+                                               // Al restaurar desde Supabase, RestoreTables vuelve a deducir el tipo (ALQUILERES o cargo > 0 = Implemento).
+                                               !(name == "producto" && c.Key == "tipo") &&
+                                               !(name == "cliente" && c.Key == "consentimiento_revocado") &&
+                                               !(name == "comprobante" && c.Key == "mensaje_respuesta")).ToList();
                     var names = kept.Select(c => c.Key).ToArray();
                     var info = new ReplicaTableInfo
                     {

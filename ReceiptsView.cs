@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
 using System.Text;
@@ -15,6 +16,11 @@ namespace EdenPOS
         private readonly Panel listHost;
         private readonly ScreenHeader header;
         private readonly Button paymentSummaryButton;
+        // RF-13: filtros por estado de envío de la boleta (simulada) y por rango de fechas, además de la búsqueda.
+        private readonly ComboBox statusFilter;
+        private readonly DateTimePicker fromDate;
+        private readonly DateTimePicker toDate;
+        private static readonly string[] StatusFilterLabels = { "Todos los estados", ComprobanteEstados.Aceptado, ComprobanteEstados.Pendiente, ComprobanteEstados.Rechazado };
         private EmptyState listEmpty;
         private Receipt selected;
 
@@ -27,6 +33,11 @@ namespace EdenPOS
             paymentSummaryButton = Theme.Button("Resumen de cobros", ButtonVariant.Secondary);
             paymentSummaryButton.Click += PaymentSummary_Click;
             header.AddAction(paymentSummaryButton);
+            // RF-21: boletas no enviadas (pendientes o rechazadas) con reintento manual.
+            var pendingButton = Theme.Button("Boletas no enviadas", ButtonVariant.Secondary);
+            pendingButton.Click += PendingInvoices_Click;
+            header.AddAction(pendingButton);
+            pendingButton.Margin = new Padding(Theme.Space.Sm, 0, 0, 0);
             search = Theme.TextBox("Buscar por número, DNI, cliente o pago");
             search.TextChanged += (s, e) => LoadReceipts();
             var searchField = Theme.Field(search, Theme.Dim.Field);
@@ -55,6 +66,36 @@ namespace EdenPOS
             receiptGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Number", Width = 112, AutoSizeMode = DataGridViewAutoSizeColumnMode.None, DefaultCellStyle = { Alignment = DataGridViewContentAlignment.MiddleRight } });
             receiptGrid.SelectionChanged += (s, e) => SelectCurrent();
             listHost.Controls.Add(receiptGrid);
+
+            // Filtros (RF-13) sobre la lista: estado de envío de la boleta y rango de fechas. Una fecha sin marcar = sin límite.
+            statusFilter = Theme.Combo();
+            statusFilter.Items.AddRange(StatusFilterLabels);
+            statusFilter.SelectedIndex = 0;
+            statusFilter.SelectedIndexChanged += (s, e) => LoadReceipts();
+            fromDate = new DateTimePicker { Format = DateTimePickerFormat.Short, Font = Theme.Body, ShowCheckBox = true, Checked = false, Value = DateTime.Today, Dock = DockStyle.Fill };
+            toDate = new DateTimePicker { Format = DateTimePickerFormat.Short, Font = Theme.Body, ShowCheckBox = true, Checked = false, Value = DateTime.Today, Dock = DockStyle.Fill };
+            fromDate.ValueChanged += (s, e) => LoadReceipts();
+            toDate.ValueChanged += (s, e) => LoadReceipts();
+            var filters = new TableLayoutPanel
+            {
+                Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 4, RowCount = 2,
+                BackColor = Theme.Surface, Margin = new Padding(0), Padding = new Padding(Theme.Space.Xs, Theme.Space.Xs, Theme.Space.Xs, Theme.Space.Sm)
+            };
+            filters.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            filters.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
+            filters.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            filters.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
+            filters.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            filters.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            var statusField = FilterField(statusFilter);
+            filters.Controls.Add(FilterLabel("Envío de boleta"), 0, 0);
+            filters.Controls.Add(statusField, 1, 0);
+            filters.SetColumnSpan(statusField, 3);
+            filters.Controls.Add(FilterLabel("Desde"), 0, 1);
+            filters.Controls.Add(FilterField(fromDate), 1, 1);
+            filters.Controls.Add(FilterLabel("Hasta"), 2, 1);
+            filters.Controls.Add(FilterField(toDate), 3, 1);
+            listHost.Controls.Add(filters);
             content.Controls.Add(listHost, 0, 0);
 
             detailHost = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Canvas, Padding = new Padding(0), AutoScroll = true, Margin = new Padding(0) };
@@ -83,6 +124,47 @@ namespace EdenPOS
             LoadReceipts();
         }
 
+        private static Label FilterLabel(string text)
+        {
+            return new Label { Text = text, Font = Theme.Caption, ForeColor = Theme.Muted, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 0, Theme.Space.Sm, 0) };
+        }
+
+        private static Control FilterField(Control inner)
+        {
+            var field = Theme.Field(inner, Theme.Dim.Field);
+            field.Dock = DockStyle.Fill;
+            field.Margin = new Padding(0, Theme.Space.Xs, Theme.Space.Sm, Theme.Space.Xs);
+            return field;
+        }
+
+        // RF-13: estado de envío elegido (null = todos) y si hay algún filtro activo además de la búsqueda.
+        private string SelectedSendState
+        {
+            get { return statusFilter == null || statusFilter.SelectedIndex <= 0 ? null : StatusFilterLabels[statusFilter.SelectedIndex]; }
+        }
+
+        private bool FiltersActive
+        {
+            get { return SelectedSendState != null || (fromDate != null && fromDate.Checked) || (toDate != null && toDate.Checked); }
+        }
+
+        // Filtro de RF-13, sin interfaz para poder probarlo: estado de envío (null = todos; un recibo sin boleta o con la boleta anulada
+        // solo aparece en "todos") y rango de fechas por día de creación del recibo (null = sin límite). Ambos extremos incluidos.
+        internal static IEnumerable<Receipt> FilterReceipts(IEnumerable<Receipt> receipts, string sendState, DateTime? from, DateTime? to)
+        {
+            var result = receipts ?? Enumerable.Empty<Receipt>();
+            if (sendState != null) result = result.Where(x => x.Comprobante != null && x.Comprobante.Estado == sendState);
+            if (from.HasValue) result = result.Where(x => x.CreatedAt.Date >= from.Value.Date);
+            if (to.HasValue) result = result.Where(x => x.CreatedAt.Date <= to.Value.Date);
+            return result;
+        }
+
+        private void PendingInvoices_Click(object sender, EventArgs e)
+        {
+            using (var dialog = new PendingInvoicesDialog()) dialog.ShowDialog(FindForm());
+            LoadReceipts();
+        }
+
         private void LoadReceipts()
         {
             try
@@ -102,7 +184,8 @@ namespace EdenPOS
             UpdatePaymentTotals();
             var previousId = selected == null ? null : selected.Id;
             var term = (search.Text ?? "").Trim();
-            var receipts = AppData.Receipts.AsEnumerable();
+            var receipts = FilterReceipts(AppData.Receipts, SelectedSendState,
+                fromDate.Checked ? fromDate.Value.Date : (DateTime?)null, toDate.Checked ? toDate.Value.Date : (DateTime?)null);
             if (term.Length > 0)
             {
                 receipts = receipts.Where(x =>
@@ -151,7 +234,10 @@ namespace EdenPOS
             if (listEmpty != null)
             {
                 listEmpty.Visible = none;
-                if (term.Length > 0) { listEmpty.Title = "Sin resultados"; listEmpty.Hint = "Pruebe con otro número, DNI o nombre."; }
+                if (fromDate.Checked && toDate.Checked && fromDate.Value.Date > toDate.Value.Date)
+                { listEmpty.Title = "Rango de fechas no válido"; listEmpty.Hint = "La fecha \"Desde\" no puede ser posterior a \"Hasta\"."; }
+                else if (FiltersActive) { listEmpty.Title = "Sin resultados"; listEmpty.Hint = "Pruebe con otro estado de envío, rango de fechas, número, DNI o nombre."; }
+                else if (term.Length > 0) { listEmpty.Title = "Sin resultados"; listEmpty.Hint = "Pruebe con otro número, DNI o nombre."; }
                 else { listEmpty.Title = "Todavía no hay recibos"; listEmpty.Hint = "Cuando cobre una venta, aparecerá aquí."; }
             }
             if (none)

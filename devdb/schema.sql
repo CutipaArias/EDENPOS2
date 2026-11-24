@@ -27,6 +27,7 @@ CREATE TABLE cliente (
   telefono VARCHAR(15) NULL,
   consentimiento_datos TINYINT(1) NOT NULL DEFAULT 0,
   consentimiento_fecha DATETIME NULL,
+  consentimiento_revocado DATETIME NULL,
   created_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL
 );
@@ -44,6 +45,7 @@ CREATE TABLE producto (
   stock_inicial INT NOT NULL DEFAULT 0,
   stock_minimo INT NOT NULL DEFAULT 0,
   cargo_perdida DECIMAL(10,2) NOT NULL DEFAULT 0,
+  tipo VARCHAR(12) NOT NULL DEFAULT 'Producto',
   UNIQUE KEY uq_producto_nombre_categoria (nombre, categoria)
 );
 
@@ -166,6 +168,7 @@ CREATE TABLE comprobante (
   codigo_respuesta VARCHAR(10) NULL,
   intentos TINYINT NOT NULL DEFAULT 0,
   ultimo_intento DATETIME NULL,
+  mensaje_respuesta VARCHAR(200) NULL,
   FOREIGN KEY (id_recibo) REFERENCES recibo(id_recibo),
   UNIQUE KEY uq_comprobante_serie_numero (serie, numero)
 );

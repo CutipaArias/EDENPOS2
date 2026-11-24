@@ -9,7 +9,7 @@ using System.Windows.Forms;
 namespace EdenPOS
 {
     // Configuración: una navegación de secciones a la izquierda y UNA sección a la vez a la derecha.
-    // Secciones: Negocio · Usuarios · Promociones · Cargos por pérdida · Facturación electrónica (simulada) · Impresora · Consulta de DNI · Copias de seguridad y datos · Réplica en Supabase.
+    // Secciones: Negocio · Usuarios · Promociones · Cargos por pérdida · Facturación electrónica (simulada) · Impresora · Consulta de DNI · Clientes · Copias de seguridad y datos · Réplica en Supabase.
     public sealed class SettingsView : UserControl, IRefreshable
     {
         private readonly TextBox store;
@@ -147,6 +147,7 @@ namespace EdenPOS
             AddSection(pageHost, "facturacion", "Facturación electrónica (simulada)", BuildInvoicing());
             AddSection(pageHost, "impresora", "Impresora", BuildPrinter());
             AddSection(pageHost, "dni", "Consulta de DNI", BuildDni());
+            AddSection(pageHost, "clientes", "Clientes", BuildCustomers());
             AddSection(pageHost, "copias", "Copias de seguridad y datos", BuildBackups());
             AddSection(pageHost, "supabase", "Réplica en Supabase", BuildSupabase());
 
@@ -361,7 +362,14 @@ namespace EdenPOS
             tools.Add(Note("Los rechazados y pendientes se reintentan solos cada " + (int)ElectronicInvoicingService.IntervaloPorDefecto.TotalMinutes + " minutos mientras la app esté abierta (máximo " + ElectronicInvoicingService.MaxIntentos + " intentos automáticos)."), Theme.Space.Lg);
             einvReintentar = Theme.Button("Reintentar envíos", ButtonVariant.Primary);
             einvReintentar.Click += EinvReintentar_Click;
-            tools.Add(ButtonRow(einvReintentar), Theme.Space.Xl);
+            // RF-21: lista de boletas no enviadas (pendientes o rechazadas) con reintento de una o de todas.
+            var einvList = Theme.Button("Ver boletas no enviadas…", ButtonVariant.Secondary);
+            einvList.Click += (s, e) =>
+            {
+                using (var dialog = new PendingInvoicesDialog()) dialog.ShowDialog(FindForm());
+                RefreshEinv();
+            };
+            tools.Add(ButtonRow(einvReintentar, einvList), Theme.Space.Xl);
             yield return tools;
         }
 
@@ -413,6 +421,23 @@ namespace EdenPOS
             var saveDni = Theme.Button("Guardar configuración", ButtonVariant.Primary);
             saveDni.Click += Save_Click;
             card.Add(ButtonRow(saveDni), Theme.Space.Xl);
+            yield return card;
+        }
+
+        // RNF-09 / RN-14: el cliente puede retirar su consentimiento; la dueña lo registra aquí (CustomerPrivacyDialog).
+        private IEnumerable<StackCard> BuildCustomers()
+        {
+            var card = new StackCard();
+            card.Add(CardTitle("Clientes y consentimiento"), 0);
+            card.Add(Note("El DNI y el teléfono de un cliente solo se guardan con su consentimiento (Ley N.º 29733). Si el cliente lo retira, búsquelo aquí y regístrelo."), Theme.Space.Xs);
+            card.Add(Note("Se borra su teléfono y se anonimiza su DNI. Los recibos mayores a " + Theme.Money(AppData.DniObligatorioDesde) +
+                " conservan el documento, porque SUNAT lo exige en esas boletas. Queda registrado en Auditoría.", Theme.Caption), Theme.Space.Md);
+            var open = Theme.Button("Buscar cliente…", ButtonVariant.Primary);
+            open.Click += (s, e) =>
+            {
+                using (var dialog = new CustomerPrivacyDialog()) dialog.ShowDialog(FindForm());
+            };
+            card.Add(ButtonRow(open), Theme.Space.Xl);
             yield return card;
         }
 
@@ -989,6 +1014,9 @@ namespace EdenPOS
                 try
                 {
                     var exportedRows = AppData.ExportBackup(dialog.FileName);
+                    // RNF-09: la copia lleva DNI y teléfonos de clientes; la exportación manual queda en Auditoría (la automática no, es interna).
+                    try { AppData.RegistrarExportacionDatos("Copia de seguridad exportada (" + exportedRows + " registros, incluye los clientes con DNI y teléfono): " + Path.GetFileName(dialog.FileName)); }
+                    catch (Exception auditEx) { AppData.LogError(auditEx, "Auditar exportación de copia"); }
                     Msg(Tone.Success, "Copia creada correctamente (" + exportedRows + " registros). Por seguridad, el token DNI y la cadena de conexión no fueron incluidos.", "Copia de seguridad");
                 }
                 catch (Exception ex)

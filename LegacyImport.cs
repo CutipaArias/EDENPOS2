@@ -522,6 +522,7 @@ namespace EdenPOS
                 var byDni = new Dictionary<string, Customer>();
                 var invalid = 0;
                 var repeated = 0;
+                var withoutConsent = 0;
                 foreach (var customer in customers)
                 {
                     var dni = Validation.NormalizeDni(customer.Dni);
@@ -529,22 +530,36 @@ namespace EdenPOS
                     if (byDni.ContainsKey(dni)) repeated++;
                     byDni[dni] = customer;
                 }
+                // RNF-09 / RN-14: el DNI (clave de cliente) solo se guarda con consentimiento. Los JSON antiguos no lo registraban
+                // (DataConsent = false), así que esos clientes NO se importan; tampoco los que lo retiraron. Sus recibos sí se importan
+                // con el DNI del comprobante (respaldo de la venta).
+                foreach (var dni in byDni.Where(p => !p.Value.DataConsent || p.Value.ConsentRevokedAt.HasValue).Select(p => p.Key).ToList())
+                {
+                    byDni.Remove(dni);
+                    withoutConsent++;
+                }
                 foreach (var pair in byDni)
                 {
                     var customer = pair.Value;
+                    var phone = Validation.NormalizePhone(customer.Phone ?? "");
                     Execute(connection, transaction,
-                        "INSERT INTO cliente (dni, nombre_completo, origen, created_at, updated_at) VALUES (@dni, @nombre, @origen, @creado, @actualizado)",
+                        "INSERT INTO cliente (dni, nombre_completo, origen, telefono, consentimiento_datos, consentimiento_fecha, created_at, updated_at) " +
+                        "VALUES (@dni, @nombre, @origen, @telefono, 1, @consentimiento, @creado, @actualizado)",
                         new Dictionary<string, object>
                         {
                             { "@dni", pair.Key },
                             { "@nombre", Fit(customer.FullName, 150, "cliente.nombre_completo") },
                             { "@origen", Fit(customer.Source, 60, "cliente.origen") },
+                            { "@telefono", phone.Length > 0 && Validation.IsValidPhone(phone) ? phone : null },
+                            { "@consentimiento", LocalSecond(customer.ConsentDate ?? customer.UpdatedAt) },
                             { "@creado", LocalSecond(customer.CreatedAt) },
                             { "@actualizado", LocalSecond(customer.UpdatedAt) }
                         });
                 }
                 if (invalid > 0) summary.AddAdjustment(invalid + " clientes con DNI que no tiene 8 dígitos no se importaron.");
                 if (repeated > 0) summary.AddAdjustment(repeated + " clientes con DNI repetido: se conservó la última fila de cada DNI.");
+                if (withoutConsent > 0)
+                    summary.AddAdjustment(withoutConsent + " clientes sin consentimiento registrado no se importaron (Ley N.º 29733): su DNI solo se guarda si el cliente lo autoriza.");
                 summary.AddCount("Clientes", byDni.Count);
             }
 
@@ -564,15 +579,17 @@ namespace EdenPOS
                         try
                         {
                             Execute(connection, transaction,
-                                "INSERT INTO producto (id_producto, categoria, nombre, precio, imagen, color_hex, activo, controla_inventario, stock, stock_inicial) " +
-                                "VALUES (@id, @categoria, @nombre, @precio, @imagen, @color, @activo, @controla, @stock, @inicial)",
+                                "INSERT INTO producto (id_producto, categoria, nombre, precio, imagen, color_hex, activo, controla_inventario, stock, stock_inicial, tipo) " +
+                                "VALUES (@id, @categoria, @nombre, @precio, @imagen, @color, @activo, @controla, @stock, @inicial, @tipo)",
                                 new Dictionary<string, object>
                                 {
                                     { "@id", product.Id }, { "@categoria", category }, { "@nombre", candidate },
                                     { "@precio", Money(product.Price) },
                                     { "@imagen", FitOrNull(product.ImageFile, 255, "producto.imagen") },
                                     { "@color", color }, { "@activo", product.Active }, { "@controla", product.TrackInventory },
-                                    { "@stock", product.Stock }, { "@inicial", product.InitialStock }
+                                    { "@stock", product.Stock }, { "@inicial", product.InitialStock },
+                                    // RF-14: los JSON antiguos no traen tipo ni cargo: ALQUILERES se importa como Implemento (misma regla que la migración 009).
+                                    { "@tipo", ProductTypes.Normalize(product.Tipo, category, 0m) }
                                 });
                             if (attempt > 1)
                                 summary.AddAdjustment("Artículo repetido (misma categoría y nombre, sin distinguir mayúsculas ni tildes): \"" + baseName + "\" de " + category + " se renombró a \"" + candidate + "\".");

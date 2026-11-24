@@ -44,3 +44,11 @@ La prueba de caja (RN-02, RF-04, RF-05, RNF-04) parte de una base sin las column
 `007_caja_medios.sql`, comprueba la migración, el rechazo de cobros sin turno (también
 cuando otra caja cierra el turno a la vez), el esperado por medio de pago, la observación
 obligatoria, la auditoría de cada cierre, el reporte de caja y copias nuevas y antiguas.
+La prueba FD03 (también con `EDENPOS_TEST_MYSQL_CONNECTION`) parte de una base sin
+las columnas de la migración 009 y comprueba: la migración de `producto.tipo`
+(ALQUILERES o cargo por pérdida pasan a Implemento), que un Producto no tenga cargo
+por pérdida, la lista de boletas no enviadas con reintento de una y de todas
+(emisor simulado), el filtro de recibos por estado de envío y fechas, el retiro del
+consentimiento (teléfono borrado, DNI anonimizado salvo en recibos mayores a S/ 700,
+auditoría sin el DNI), copias nuevas y anteriores a 009, y la importación de JSON
+antiguos sin guardar clientes que no dieron su consentimiento.

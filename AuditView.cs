@@ -124,6 +124,8 @@ namespace EdenPOS
                 case AuditActions.CuentaBloqueada:
                 case AuditActions.CargoPerdidaCambiado:
                 case AuditActions.LlavesQuitadas:
+                case AuditActions.ConsentimientoRetirado:
+                case AuditActions.DatosExportados:
                     return Tone.Warning;
                 case AuditActions.CopiaRestaurada:
                 case AuditActions.DatosImportados:
@@ -237,6 +239,8 @@ namespace EdenPOS
                 case AuditActions.LlaveLiberada: return "Llave liberada";
                 case AuditActions.CargoPerdidaCambiado: return "Cargo por pérdida cambiado";
                 case AuditActions.LlavesQuitadas: return "Llaves quitadas sin cobrar";
+                case AuditActions.ConsentimientoRetirado: return "Consentimiento retirado";
+                case AuditActions.DatosExportados: return "Datos exportados";
                 default: return action;
             }
         }
