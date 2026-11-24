@@ -12,7 +12,7 @@ Punto de venta táctil para Windows del **Sauna El Edén Cono Sur** (Tacna). Pro
 - **Promociones:** sexta visita gratis y descuento grupal/familiar (configurables, no acumulables).
 - **Comprobantes:** facturación electrónica **simulada** con reintentos; las ventas mayores a S/ 700 exigen el documento del cliente.
 - **Recibos:** búsqueda, detalle, reembolso y resumen por día.
-- **Turno y caja:** apertura y cierre, movimientos de caja, efectivo esperado y diferencia.
+- **Turno y caja:** apertura y cierre, sin cobros con la caja cerrada, movimientos de caja en efectivo o Yape, efectivo y Yape esperados, proyección del disponible y diferencia por medio de pago.
 - **Inventario:** productos y variantes, entradas, stock mínimo con alerta.
 - **Reportes** de caja, ventas e inventario por rango de fechas, y pantalla de **Auditoría** de operaciones sensibles.
 - **Usuarios y roles:** la dueña administra; los trabajadores venden. PIN con hash y sal.
@@ -85,8 +85,11 @@ la cadena de conexión intente cambiar esas opciones.
 |---|---|---|
 | RF-01 Autenticar usuarios | Inicio de sesión | `LoginForm.cs`, `AppData.TryLogin` (bloqueo tras 5 intentos) y cierre por inactividad en `MainForm.cs` |
 | RF-02 Usuarios y roles | Configuración → Usuarios | `UserManagement.cs` |
-| RF-03, RF-04, RF-05 Caja | Turno | `ShiftView.cs`, `AppData.OpenNewShift` / `CloseShift` |
-| RN-09 Observación obligatoria si la caja no cuadra | Turno → Cerrar turno, Reportes → Caja y Auditoría | `AppData.CloseShift` (columna `sesion_caja.observacion_cierre`) |
+| RF-03 Apertura de caja | Turno | `ShiftView.cs`, `AppData.OpenNewShift` |
+| RN-02 No se cobra sin caja abierta | Ventas → Cobrar (aviso antes de abrir el cobro; el ticket se conserva) | `SalesView.cs`, `AppData.AddReceipt` (lanza "Abra un turno antes de cobrar." y bloquea el turno con `LOCK IN SHARE MODE` para que un cierre en otra caja no deje ventas fuera) |
+| RF-04 Movimientos de caja en efectivo o Yape | Turno → Registrar movimiento | `ShiftView.cs` (`TreasuryDialog`), `AppData.AddCashMovement` (columna `movimiento_caja.medio`; solo los de efectivo cambian el efectivo esperado), `devdb/migraciones/007_caja_medios.sql` |
+| RF-05 Cierre por medio de pago y proyección del disponible | Turno → Cerrar turno, Reportes → Caja | `AppData.GetShiftBalance` / `CloseShift` (efectivo contado y Yape confirmado; columnas `sesion_caja.yape_esperado` y `yape_contado`), `Reports.cs`, `ReportsView.cs` |
+| RN-09 Observación obligatoria si la caja no cuadra (efectivo o Yape) | Turno → Cerrar turno, Reportes → Caja y Auditoría | `AppData.CloseShift` (columna `sesion_caja.observacion_cierre`) |
 | RF-06 Registrar cliente (RN-14, RNF-09) | Ventas (DNI, nombre, teléfono y casilla de consentimiento) | `SalesView.cs`, `AppData.SaveCustomer` (DNI y teléfono solo con consentimiento, Ley N.º 29733), `Validation.IsValidPhone` |
 | RF-07 a RF-10 Visita, casilleros, consumos y cobro | Ventas | `SalesView.cs`, `Dialogs.cs`, `AppData.AddReceipt` |
 | RF-20 Visitas activas: tiempo y saldo | Ventas → Tickets guardados | `Dialogs.cs` (`SavedTicketsDialog`, columnas Tiempo y Por cobrar) |
@@ -100,7 +103,7 @@ la cadena de conexión intente cambiar esas opciones.
 | RF-18 Respaldos | Configuración → Copias de seguridad | `AutoBackup.cs`, `SupabaseReplica.cs` |
 | RF-19, RN-06, RN-07 y RF-22 (cargos por pérdida) Devolución de llaves e implementos | Cobro de un ticket con llaves, Configuración → Cargos por pérdida e Inventario → Editar artículo | `KeyReturns.cs`, `KeyReturnDialog.cs`, `AppData.AddReceipt` (valida los cargos; las llaves no devueltas quedan fuera de uso hasta que la dueña las libera) |
 | RNF-03 Seguridad del PIN | — | `Security.cs` (PBKDF2 con sal) |
-| RNF-04 Trazabilidad | Auditoría | `AuditView.cs`, `AppData.RegistrarAuditoria` |
+| RNF-04 Trazabilidad | Auditoría | `AuditView.cs`, `AppData.RegistrarAuditoria` (todo cierre de caja queda como `CAJA_CERRADA` con esperado y contado de efectivo y Yape; si no cuadra, además `CAJA_DIFERENCIA`) |
 
 ## Capturas
 
