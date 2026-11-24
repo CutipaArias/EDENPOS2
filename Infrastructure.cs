@@ -2562,10 +2562,9 @@ namespace EdenPOS
             }
             using (var command = new MySqlCommand(
                 "SELECT COALESCE(SUM(saldo_cobrado_efectivo), 0), COALESCE(SUM(saldo_cobrado_yape), 0) FROM recibo " +
-                "WHERE estado = 'Pagado' AND saldo_cobrado_at >= @desde" + (shift.ClosedAt.HasValue ? " AND saldo_cobrado_at <= @hasta" : ""), connection, transaction))
+                "WHERE estado = 'Pagado' AND saldo_cobrado_at IS NOT NULL AND saldo_id_sesion = @id", connection, transaction))
             {
-                command.Parameters.AddWithValue("@desde", shift.OpenedAt);
-                if (shift.ClosedAt.HasValue) command.Parameters.AddWithValue("@hasta", shift.ClosedAt.Value);
+                command.Parameters.AddWithValue("@id", shift.Id);
                 using (var reader = command.ExecuteReader())
                     if (reader.Read())
                     {

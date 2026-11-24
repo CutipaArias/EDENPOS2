@@ -1220,7 +1220,7 @@ namespace EdenPOS
                                                !(name == "producto" && c.Key == "cargo_perdida") &&
                                                // RF-14 / RNF-09 / RF-21 (devdb/migraciones/009): tipo de artículo, fecha de retiro del consentimiento y
                                                // último mensaje del emisor simulado, por ahora solo en la base local (01_esquema_replica.sql ya las agrega).
-                                               // Al restaurar desde Supabase, RestoreTables vuelve a deducir el tipo (ALQUILERES o cargo > 0 = Implemento).
+                                               // Al restaurar desde Supabase, RestoreTables vuelve a deducir el tipo, pero solo por la categoría ALQUILERES: cargo_perdida tampoco se replica.
                                                !(name == "producto" && c.Key == "tipo") &&
                                                !(name == "cliente" && c.Key == "consentimiento_revocado") &&
                                                !(name == "comprobante" && c.Key == "mensaje_respuesta") &&

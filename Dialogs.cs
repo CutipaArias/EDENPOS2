@@ -375,7 +375,7 @@ namespace EdenPOS
             DialogKit.Row(stack, Theme.LabelField("Saldo que queda pendiente (total " + Theme.Money(total) + ")"), 0, Theme.Space.Xs);
             amount = new NumericUpDown
             {
-                Font = Theme.Emphasis, DecimalPlaces = 2, Minimum = 0.01m, Maximum = Math.Max(0.01m, total), Value = Math.Max(0.01m, total), ThousandsSeparator = true
+                Font = Theme.Emphasis, DecimalPlaces = 2, Minimum = 0.01m, Maximum = Math.Max(0.01m, total), Value = 0.01m, ThousandsSeparator = true
             };
             amount.ValueChanged += (s, e) => UpdatePaid();
             var amountField = Theme.Field(amount, Theme.Dim.Control);

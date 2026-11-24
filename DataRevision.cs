@@ -30,7 +30,7 @@ namespace EdenPOS
             "(SELECT COALESCE(SUM(precio), 0) FROM producto), " +
             "(SELECT COALESCE(SUM(activo), 0) FROM producto), " +
             // Huella de las columnas de texto/ajustes (nombre, categoría, imagen, color, stock mínimo...): detecta ediciones que no cambian conteos ni sumas.
-            "(SELECT COALESCE(SUM(CRC32(CONCAT_WS('|', id_producto, categoria, nombre, COALESCE(imagen, ''), color_hex, stock_minimo, controla_inventario))), 0) FROM producto), " +
+            "(SELECT COALESCE(SUM(CRC32(CONCAT_WS('|', id_producto, categoria, nombre, COALESCE(imagen, ''), color_hex, stock_minimo, controla_inventario, tipo, cargo_perdida))), 0) FROM producto), " +
             "(SELECT COUNT(*) FROM producto_variante), " +
             "(SELECT COALESCE(SUM(stock), 0) FROM producto_variante), " +
             "(SELECT COALESCE(SUM(precio), 0) FROM producto_variante), " +

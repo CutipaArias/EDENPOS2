@@ -431,7 +431,7 @@ namespace EdenPOS
             card.Add(CardTitle("Clientes y consentimiento"), 0);
             card.Add(Note("El DNI y el teléfono de un cliente solo se guardan con su consentimiento (Ley N.º 29733). Si el cliente lo retira, búsquelo aquí y regístrelo."), Theme.Space.Xs);
             card.Add(Note("Se borra su teléfono y se anonimiza su DNI. Los recibos mayores a " + Theme.Money(AppData.DniObligatorioDesde) +
-                " conservan el documento, porque SUNAT lo exige en esas boletas. Queda registrado en Auditoría.", Theme.Caption), Theme.Space.Md);
+                " conservan el documento, porque SUNAT lo exige en esas boletas, y también los que tienen saldo pendiente por cobrar. Queda registrado en Auditoría.", Theme.Caption), Theme.Space.Md);
             var open = Theme.Button("Buscar cliente…", ButtonVariant.Primary);
             open.Click += (s, e) =>
             {

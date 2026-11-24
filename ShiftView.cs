@@ -129,9 +129,9 @@ namespace EdenPOS
             rows.Controls.Add(title, 0, 0); rows.SetColumnSpan(title, 2);
             rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 38f));
             AddBreakdown(rows, 1, "Apertura de caja", Theme.Money(shift.OpeningAmount), Theme.Ink);
-            AddBreakdown(rows, 2, "Ventas en efectivo", Theme.Money(balance.CashSales), Theme.Ink);
+            AddBreakdown(rows, 2, "Cobros en efectivo (ventas y saldos)", Theme.Money(balance.CashSales), Theme.Ink);
             AddBreakdown(rows, 3, "Movimientos en efectivo (neto)", Theme.Money(balance.CashMovements), balance.CashMovements < 0 ? Theme.Danger : Theme.Ink);
-            AddBreakdown(rows, 4, "Ventas por Yape", Theme.Money(balance.YapeSales), Theme.Ink);
+            AddBreakdown(rows, 4, "Cobros por Yape (ventas y saldos)", Theme.Money(balance.YapeSales), Theme.Ink);
             AddBreakdown(rows, 5, "Movimientos por Yape (neto)", Theme.Money(balance.YapeMovements), balance.YapeMovements < 0 ? Theme.Danger : Theme.Ink);
             AddBreakdown(rows, 6, "Yape esperado (no suma al efectivo)", Theme.Money(balance.ExpectedYape), Theme.Ink, true);
             AddBreakdown(rows, 7, "Disponible proyectado", Theme.Money(balance.ProjectedAvailable), Theme.GreenDark, true);

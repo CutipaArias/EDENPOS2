@@ -1120,6 +1120,22 @@ internal static class RegressionChecks
                 visits = AppData.GetVisitReport(today, today);
                 Check(visits.Visits == 5 && visits.PendingBalance == 0m, "RF-17: un recibo reembolsado no cuenta como visita.");
 
+                // RNF-09 + RN-01: al retirar el consentimiento, un recibo con saldo pendiente sin cobrar conserva el DNI (deuda viva); los demás lo pierden.
+                AppData.SaveCustomer("55555555", "Rosa Deuda", "Prueba", null, true);
+                var debt = AppData.AddReceipt(saunaLines(), "Rosa Deuda", "55555555", "Efectivo", 0m, pendingBalance: auth(total, owner.Id, "0000"));
+                var paidVisit = AppData.AddReceipt(saunaLines(), "Rosa Deuda", "55555555", "Yape", 0m);
+                var revokedDebt = AppData.RevokeCustomerConsent("55555555");
+                Check(Convert.ToString(scalar("SELECT cliente_dni FROM recibo WHERE id_recibo = '" + debt.Id + "'")) == "55555555" &&
+                      scalar("SELECT cliente_dni FROM recibo WHERE id_recibo = '" + paidVisit.Id + "'") is DBNull && revokedDebt.ReceiptsKept == 1,
+                    "RNF-09: el retiro del consentimiento conserva el DNI solo en el recibo con saldo pendiente.");
+
+                // RN-01 + RF-05: el saldo cobrado cuenta en el turno donde se cobró (saldo_id_sesion), no por fechas.
+                var debtShift = AppData.OpenShift;
+                var before = AppData.GetShiftBalance(debtShift);
+                AppData.CollectBalance(debt.Id, "Yape", 0m);
+                var after = AppData.GetShiftBalance(debtShift);
+                Check(after.YapeSales - before.YapeSales == total && after.CashSales == before.CashSales, "RF-05: el saldo cobrado por Yape suma al Yape esperado de su turno.");
+
                 // Réplica en Supabase: las columnas nuevas de recibo se quedan en la base local.
                 var tables = (System.Collections.IEnumerable)Invoke(typeof(AppData), null, "ReplicaBuildTables");
                 foreach (var info in tables)
@@ -1144,14 +1160,14 @@ internal static class RegressionChecks
                         using (var reader = new StreamReader(entry.Open(), Encoding.UTF8)) json = reader.ReadToEnd();
                         var serializer = new System.Web.Script.Serialization.JavaScriptSerializer();
                         var rows = serializer.Deserialize<List<Dictionary<string, object>>>(json);
-                        Check(rows.Count == 8 && rows.All(r => newColumns.All(r.ContainsKey)), "RN-01: la copia de seguridad incluye las columnas nuevas de recibo.");
+                        Check(rows.Count == 10 && rows.All(r => newColumns.All(r.ContainsKey)), "RN-01: la copia de seguridad incluye las columnas nuevas de recibo.");
                         foreach (var row in rows) foreach (var column in newColumns) row.Remove(column);
                         entry.Delete();
                         using (var writer = new StreamWriter(zip.CreateEntry("tables/recibo.json").Open(), new UTF8Encoding(false))) writer.Write(serializer.Serialize(rows));
                     }
                     AppData.ImportBackup(legacy);
                     var restoredLegacy = AppData.Receipts;
-                    Check(restoredLegacy.Count == 8 && restoredLegacy.All(r => r.PendingBalance == 0m && r.CheckInAt == null && r.BalanceCollectedAt == null),
+                    Check(restoredLegacy.Count == 10 && restoredLegacy.All(r => r.PendingBalance == 0m && r.CheckInAt == null && r.BalanceCollectedAt == null),
                         "RN-01: una copia antigua sin las columnas se restaura con saldo 0.");
                     AppData.ImportBackup(current);
                     var restored = AppData.Receipts.Single(r => r.Id == visit.Id);

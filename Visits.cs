@@ -128,7 +128,8 @@ namespace EdenPOS
                     if (status != "Pagado") throw new InvalidOperationException("El recibo está " + status.ToLowerInvariant() + ": su saldo ya no se puede cobrar.");
                     if (balance <= 0m) throw new InvalidOperationException("Este recibo no tiene saldo pendiente.");
                     if (collected) throw new InvalidOperationException("El saldo de este recibo ya se cobró.");
-                    var shift = ReadOpenShift(connection, transaction);
+                    // RN-02: igual que AddReceipt, LOCK IN SHARE MODE (MariaDB 10.4) hace esperar a un cierre de caja simultáneo, así el saldo entra en ese turno.
+                    var shift = ReadShifts(connection, transaction, "WHERE abierta = 1 ORDER BY fecha_apertura DESC LIMIT 1 LOCK IN SHARE MODE", new Dictionary<string, object>()).FirstOrDefault();
                     if (shift == null) throw new InvalidOperationException("Abra un turno antes de cobrar el saldo: el pago entra a la caja abierta.");
                     var cash = Math.Round(method == "Mixto" ? cashAmount : method == "Efectivo" ? balance : 0m, 2);
                     var yape = Math.Round(method == "Mixto" ? yapeAmount : method == "Yape" ? balance : 0m, 2);

@@ -135,7 +135,7 @@ namespace EdenPOS
                 "El cliente " + customer.FullName + " retira su consentimiento para el uso de sus datos.\n\n" +
                 "• Se borra su teléfono.\n" +
                 "• Su DNI se anonimiza en el registro de clientes, en los tickets abiertos y en los recibos de " + Theme.Money(AppData.DniObligatorioDesde) + " o menos.\n" +
-                "• Los recibos mayores a " + Theme.Money(AppData.DniObligatorioDesde) + " conservan el documento, porque SUNAT lo exige en esas boletas.\n" +
+                "• Los recibos mayores a " + Theme.Money(AppData.DniObligatorioDesde) + " conservan el documento, porque SUNAT lo exige en esas boletas; también los que tienen saldo pendiente por cobrar.\n" +
                 "• Su conteo de visitas para la promoción de sexta visita vuelve a empezar.\n\n" +
                 "Esta acción no se puede deshacer y queda en Auditoría. ¿Continuar?",
                 "Retirar consentimiento", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
@@ -160,7 +160,7 @@ namespace EdenPOS
             Reload();
             Theme.Message(this, Tone.Success,
                 "Consentimiento retirado. Se borró el teléfono y se anonimizó el DNI en " + result.ReceiptsAnonymized + " recibo(s) y " + result.TicketsAnonymized + " ticket(s)." +
-                (result.ReceiptsKept > 0 ? " " + result.ReceiptsKept + " recibo(s) mayores a " + Theme.Money(AppData.DniObligatorioDesde) + " conservan el documento (SUNAT)." : ""),
+                (result.ReceiptsKept > 0 ? " " + result.ReceiptsKept + " recibo(s) conservan el documento (mayores a " + Theme.Money(AppData.DniObligatorioDesde) + " por SUNAT o con saldo pendiente)." : ""),
                 "Retirar consentimiento");
         }
     }

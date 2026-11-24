@@ -28,6 +28,8 @@ namespace EdenPOS
     //   documento: SUNAT exige identificar al adquirente en boletas de ese monto y el recibo es el respaldo de su boleta (simulada aquí, pero el
     //   dato se conserva como lo exigiría la real), y la Ley 29733 permite conservar datos para cumplir una obligación legal. Tampoco se toca
     //   comprobante: no guarda el DNI, lo toma del recibo.
+    //   También conservan el DNI los recibos con saldo pendiente aún no cobrado (RN-01): es una deuda viva y la ley permite conservar el dato para
+    //   cobrarla (queda en ese recibo aunque luego se cobre el saldo).
     // - ticket_guardado: se quita el DNI de las visitas abiertas; si la cuenta supera S/ 700 al cobrar, se vuelve a pedir el documento.
     // - Auditoría: CONSENTIMIENTO_RETIRADO con el nombre y los conteos, nunca con el DNI.
     // Efecto conocido: la promoción de sexta visita cuenta visitas por DNI, así que el conteo del cliente vuelve a empezar.
@@ -69,7 +71,7 @@ namespace EdenPOS
                     // Solo los DNI reales (8 dígitos) aparecen en recibos y tickets; un seudónimo no.
                     if (!IsAnonymizedDni(key))
                     {
-                        result.ReceiptsAnonymized = PrivacyCount(connection, transaction, "UPDATE recibo SET cliente_dni = NULL WHERE cliente_dni = @dni AND total <= @limite", parameters);
+                        result.ReceiptsAnonymized = PrivacyCount(connection, transaction, "UPDATE recibo SET cliente_dni = NULL WHERE cliente_dni = @dni AND total <= @limite AND NOT (estado = 'Pagado' AND saldo_pendiente > 0 AND saldo_cobrado_at IS NULL)", parameters);
                         result.ReceiptsKept = Convert.ToInt32(PrivacyScalar(connection, transaction, "SELECT COUNT(*) FROM recibo WHERE cliente_dni = @dni", parameters), CultureInfo.InvariantCulture);
                         result.TicketsAnonymized = PrivacyCount(connection, transaction, "UPDATE ticket_guardado SET cliente_dni = NULL WHERE cliente_dni = @dni", parameters);
                     }
@@ -82,7 +84,7 @@ namespace EdenPOS
                     RegistrarAuditoria(connection, transaction, AuditActions.ConsentimientoRetirado,
                         "Cliente " + result.CustomerName + ": retiró su consentimiento. Teléfono borrado y DNI anonimizado en el registro de clientes, " +
                         result.ReceiptsAnonymized + " recibo(s) y " + result.TicketsAnonymized + " ticket(s) abiertos" +
-                        (result.ReceiptsKept > 0 ? "; " + result.ReceiptsKept + " recibo(s) mayores a " + Theme.Money(DniObligatorioDesde) + " conservan el documento (SUNAT)." : "."));
+                        (result.ReceiptsKept > 0 ? "; " + result.ReceiptsKept + " recibo(s) conservan el documento (mayores a " + Theme.Money(DniObligatorioDesde) + " por SUNAT o con saldo pendiente)." : "."));
                     transaction.Commit();
                 }
                 RaiseChanged();
