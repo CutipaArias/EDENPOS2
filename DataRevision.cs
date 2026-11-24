@@ -13,6 +13,7 @@ namespace EdenPOS
             "(SELECT COUNT(*) FROM recibo), " +
             "(SELECT COALESCE(MAX(created_at), '') FROM recibo), " +
             "(SELECT COUNT(refunded_at) FROM recibo), " +
+            "(SELECT COUNT(saldo_cobrado_at) FROM recibo), " +   // RN-01: cobro posterior de un saldo pendiente
             "(SELECT COUNT(*) FROM ticket_guardado), " +
             "(SELECT COALESCE(MAX(updated_at), '') FROM ticket_guardado), " +
             "(SELECT COUNT(*) FROM ticket_linea), " +

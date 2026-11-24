@@ -83,6 +83,7 @@ namespace EdenPOS
 
     public sealed class CheckoutDialog : Form
     {
+        private const int PendingRowHeight = 64;
         private readonly decimal total;
         private readonly bool checkDni;
         private readonly string customerDni;
@@ -95,31 +96,45 @@ namespace EdenPOS
         private readonly Label changeLabel;
         private readonly Button confirm;
         private readonly SegmentChip[] paymentButtons;
+        private readonly Banner pendingBanner;
+        private readonly EdenButton pendingButton;
+        private readonly int baseHeight;
+        // RN-01: lo que se cobra ahora (total menos el saldo pendiente autorizado).
+        private decimal payable;
 
         // Promoción mostrada al cajero. AddReceipt la recalcula y rechaza el cobro si cambió (parámetros expectedDiscount/expectedPromotionId).
         public decimal Discount { get; private set; }
         public string PromotionId { get; private set; }
 
+        // RN-01: saldo pendiente autorizado por la dueña (null = se cobra todo). AddReceipt vuelve a validar la autorización.
+        public PendingBalanceAuthorization PendingBalance { get; private set; }
+
         public string PaymentMethod { get; private set; } = "Efectivo";
         public decimal AmountReceived { get { return received.Value; } }
-        public decimal CashAmount { get { return PaymentMethod == "Mixto" ? received.Value : PaymentMethod == "Efectivo" ? total : 0m; } }
-        public decimal YapeAmount { get { return PaymentMethod == "Mixto" ? yapeAmount.Value : PaymentMethod == "Yape" ? total : 0m; } }
+        public decimal CashAmount { get { return PaymentMethod == "Mixto" ? received.Value : PaymentMethod == "Efectivo" ? payable : 0m; } }
+        public decimal YapeAmount { get { return PaymentMethod == "Mixto" ? yapeAmount.Value : PaymentMethod == "Yape" ? payable : 0m; } }
 
-        public CheckoutDialog(decimal totalAmount) : this(totalAmount, null)
+        public CheckoutDialog(decimal totalAmount) : this(totalAmount, (PromocionResultado)null)
+        {
+        }
+
+        // Cobro de un monto fijo con otro título (p. ej. el saldo pendiente de un recibo), sin promoción, DNI ni saldo pendiente.
+        public CheckoutDialog(decimal totalAmount, string title) : this(totalAmount, null, null, false, title, false)
         {
         }
 
         // subtotal = suma de las líneas a precio original; el total a cobrar y las validaciones de pago usan el total ya descontado.
-        public CheckoutDialog(decimal subtotal, PromocionResultado promotion) : this(subtotal, promotion, null, false)
+        public CheckoutDialog(decimal subtotal, PromocionResultado promotion) : this(subtotal, promotion, null, false, "Cobrar ticket", false)
         {
         }
 
         // RN-11: con customerDni se valida que ventas por encima de AppData.DniObligatorioDesde (ya con descuento) lleven DNI.
-        public CheckoutDialog(decimal subtotal, PromocionResultado promotion, string customerDni) : this(subtotal, promotion, customerDni, true)
+        // Es el cobro de la visita en Ventas: permite dejar saldo pendiente con autorización de la dueña (RN-01).
+        public CheckoutDialog(decimal subtotal, PromocionResultado promotion, string customerDni) : this(subtotal, promotion, customerDni, true, "Cobrar ticket", true)
         {
         }
 
-        private CheckoutDialog(decimal subtotal, PromocionResultado promotion, string dni, bool validateDni)
+        private CheckoutDialog(decimal subtotal, PromocionResultado promotion, string dni, bool validateDni, string title, bool allowPendingBalance)
         {
             checkDni = validateDni;
             customerDni = Validation.NormalizeDni(dni);
@@ -127,8 +142,10 @@ namespace EdenPOS
             Discount = hasPromotion ? promotion.Descuento : 0m;
             PromotionId = hasPromotion ? promotion.PromocionId : null;
             total = subtotal - Discount;
+            payable = total;
             var needsDni = checkDni && total > AppData.DniObligatorioDesde && customerDni.Length == 0;
-            DialogKit.Prepare(this, "Cobrar ticket", 540, 590 + (hasPromotion ? 60 : 0) + (needsDni ? 70 : 0));
+            baseHeight = 590 + (hasPromotion ? 60 : 0) + (needsDni ? 70 : 0);
+            DialogKit.Prepare(this, title, 540, baseHeight);
 
             var body = DialogKit.Body();
             var stack = DialogKit.Stack();
@@ -151,6 +168,11 @@ namespace EdenPOS
                 dniBanner.Dock = DockStyle.Fill;
                 DialogKit.Row(stack, dniBanner, 0, Theme.Space.Md);
             }
+            // RN-01: aviso del saldo pendiente autorizado (oculto mientras no haya autorización).
+            pendingBanner = Theme.Banner("", Tone.Warning);
+            pendingBanner.Dock = DockStyle.Fill;
+            pendingBanner.Visible = false;
+            DialogKit.Row(stack, pendingBanner, 0, Theme.Space.Md);
 
             // Medio de pago como segmentos
             DialogKit.Row(stack, Theme.LabelField("Medio de pago"), 0, Theme.Space.Sm);
@@ -176,7 +198,7 @@ namespace EdenPOS
                 DecimalPlaces = 2,
                 Maximum = 1000000,
                 Minimum = 0,
-                Value = total,
+                Value = Math.Min(1000000, Math.Max(0, total)),
                 ThousandsSeparator = true
             };
             received.ValueChanged += (s, e) => UpdateChange();
@@ -202,10 +224,17 @@ namespace EdenPOS
             cancel.DialogResult = DialogResult.Cancel;
             confirm = Theme.Button("Confirmar cobro", ButtonVariant.Primary);
             confirm.Click += Confirm_Click;
-            var actions = DialogKit.Actions(null, confirm, cancel);
+            // RN-01: la visita solo puede terminar con saldo si la dueña lo autoriza con su PIN.
+            if (allowPendingBalance && total > 0m)
+            {
+                pendingButton = Theme.Button("Dejar saldo pendiente", ButtonVariant.Ghost);
+                pendingButton.Width = pendingButton.GetPreferredSize(Size.Empty).Width + Theme.Space.Sm;
+                pendingButton.Click += PendingButton_Click;
+            }
+            var actions = DialogKit.Actions(pendingButton, confirm, cancel);
             Controls.Add(body);
             Controls.Add(actions);
-            Controls.Add(DialogKit.Header("Cobrar ticket"));
+            Controls.Add(DialogKit.Header(title));
             CancelButton = cancel;
             AcceptButton = confirm;
             SelectPayment(cash);
@@ -233,35 +262,66 @@ namespace EdenPOS
             yapeLabel.Visible = mixed;
             yapeField.Visible = mixed;
             yapeAmount.Enabled = mixed;
-            if (cash) { received.Value = Math.Min(received.Maximum, total); yapeAmount.Value = 0m; }
-            else if (mixed) { received.Value = Math.Min(received.Maximum, Math.Round(total / 2m, 2)); yapeAmount.Value = total - received.Value; }
-            else { received.Value = Math.Min(received.Maximum, total); yapeAmount.Value = PaymentMethod == "Yape" ? total : 0m; }
+            if (cash) { received.Value = Math.Min(received.Maximum, payable); yapeAmount.Value = 0m; }
+            else if (mixed) { received.Value = Math.Min(received.Maximum, Math.Round(payable / 2m, 2)); yapeAmount.Value = payable - received.Value; }
+            else { received.Value = Math.Min(received.Maximum, payable); yapeAmount.Value = PaymentMethod == "Yape" ? payable : 0m; }
             UpdateChange();
         }
 
         private void UpdateChange()
         {
             if (changeLabel == null) return;
+            var label = PendingBalance == null ? "Pago completo" : "Pago de hoy";
             if (PaymentMethod == "Mixto")
             {
-                var difference = total - received.Value - yapeAmount.Value;
-                changeLabel.Text = difference == 0m ? "✓  Pago completo: " + Theme.Money(total) : difference > 0m ? "Falta: " + Theme.Money(difference) : "Excede: " + Theme.Money(-difference);
+                var difference = payable - received.Value - yapeAmount.Value;
+                changeLabel.Text = difference == 0m ? "✓  " + label + ": " + Theme.Money(payable) : difference > 0m ? "Falta: " + Theme.Money(difference) : "Excede: " + Theme.Money(-difference);
                 changeLabel.ForeColor = difference == 0m ? Theme.Success : Theme.Danger;
                 if (confirm != null) confirm.Enabled = difference == 0m && received.Value > 0m && yapeAmount.Value > 0m;
             }
             else if (PaymentMethod == "Efectivo")
             {
-                var missing = total - received.Value;
-                changeLabel.Text = missing > 0m ? "Falta: " + Theme.Money(missing) : "Vuelto: " + Theme.Money(received.Value - total);
+                var missing = payable - received.Value;
+                changeLabel.Text = missing > 0m ? "Falta: " + Theme.Money(missing) : "Vuelto: " + Theme.Money(received.Value - payable);
                 changeLabel.ForeColor = missing > 0m ? Theme.Danger : Theme.Success;
-                if (confirm != null) confirm.Enabled = received.Value >= total;
+                if (confirm != null) confirm.Enabled = received.Value >= payable;
             }
             else
             {
-                changeLabel.Text = "Pago por " + PaymentMethod + ": " + Theme.Money(total);
+                changeLabel.Text = "Pago por " + PaymentMethod + ": " + Theme.Money(payable);
                 changeLabel.ForeColor = Theme.Muted;
                 if (confirm != null) confirm.Enabled = true;
             }
+        }
+
+        // RN-01: pide el saldo, la dueña que autoriza, su PIN y el motivo. Un segundo clic quita el saldo y vuelve a cobrar todo.
+        private void PendingButton_Click(object sender, EventArgs e)
+        {
+            if (PendingBalance != null)
+            {
+                SetPendingBalance(null);
+                return;
+            }
+            using (var dialog = new PendingBalanceDialog(total))
+            {
+                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                SetPendingBalance(dialog.Authorization);
+            }
+        }
+
+        private void SetPendingBalance(PendingBalanceAuthorization authorization)
+        {
+            PendingBalance = authorization;
+            payable = authorization == null ? total : total - authorization.Amount;
+            pendingBanner.Visible = authorization != null;
+            if (authorization != null)
+                pendingBanner.Text = "Saldo pendiente autorizado por " + authorization.OwnerName + ": " + Theme.Money(authorization.Amount) +
+                    ". Se cobra ahora " + Theme.Money(payable) + ".";
+            pendingButton.Text = authorization == null ? "Dejar saldo pendiente" : "Quitar saldo pendiente";
+            ClientSize = new Size(ClientSize.Width, baseHeight + (authorization == null ? 0 : PendingRowHeight));
+            Theme.FitDialogToWorkingArea(this);
+            var current = paymentButtons.FirstOrDefault(x => x.Active) ?? paymentButtons[0];
+            SelectPayment(current);
         }
 
         private void Confirm_Click(object sender, EventArgs e)
@@ -271,16 +331,138 @@ namespace EdenPOS
                 Theme.Message(this, Tone.Warning, "Las ventas mayores a " + Theme.Money(AppData.DniObligatorioDesde) + " requieren el DNI del cliente. Cancele este cobro, ingrese el DNI en el ticket y vuelva a cobrar.", "DNI obligatorio");
                 return;
             }
-            if (PaymentMethod == "Efectivo" && received.Value < total)
+            if (PaymentMethod == "Efectivo" && received.Value < payable)
             {
-                Theme.Message(this, Tone.Warning, "El importe recibido es menor que el total.", "Cobro");
+                Theme.Message(this, Tone.Warning, "El importe recibido es menor que " + (PendingBalance == null ? "el total." : "lo que se cobra ahora."), "Cobro");
                 return;
             }
-            if (PaymentMethod == "Mixto" && (received.Value <= 0m || yapeAmount.Value <= 0m || received.Value + yapeAmount.Value != total))
+            if (PaymentMethod == "Mixto" && (received.Value <= 0m || yapeAmount.Value <= 0m || received.Value + yapeAmount.Value != payable))
             {
-                Theme.Message(this, Tone.Warning, "En pago mixto, los montos de efectivo y Yape deben ser mayores que cero y sumar exactamente " + Theme.Money(total) + ".", "Cobro mixto");
+                Theme.Message(this, Tone.Warning, "En pago mixto, los montos de efectivo y Yape deben ser mayores que cero y sumar exactamente " + Theme.Money(payable) + ".", "Cobro mixto");
                 return;
             }
+            DialogResult = DialogResult.OK;
+            Close();
+        }
+    }
+
+    // RN-01: autorización de la dueña para cerrar la visita con saldo pendiente. Valida el PIN con AppData.CheckOwnerAuthorization (cuenta los
+    // intentos fallidos igual que el inicio de sesión); el cobro (AppData.AddReceipt) la vuelve a comprobar dentro de su transacción.
+    public sealed class PendingBalanceDialog : Form
+    {
+        private readonly decimal total;
+        private readonly NumericUpDown amount;
+        private readonly EdenComboBox ownerBox;
+        private readonly TextBox pinBox;
+        private readonly TextBox reasonBox;
+        private readonly Label paidLabel;
+        private readonly List<AppUser> owners;
+
+        public PendingBalanceAuthorization Authorization { get; private set; }
+
+        public PendingBalanceDialog(decimal totalAmount)
+        {
+            total = totalAmount;
+            DialogKit.Prepare(this, "Dejar saldo pendiente", 520, 600);
+            var body = DialogKit.Body();
+            var stack = DialogKit.Stack();
+            body.Controls.Add(stack);
+
+            var note = Theme.Banner("El cliente paga al terminar su visita. Solo la dueña puede autorizar que quede saldo pendiente y queda registrado en Auditoría.", Tone.Info);
+            note.Dock = DockStyle.Fill;
+            DialogKit.Row(stack, note, 0, Theme.Space.Md);
+
+            DialogKit.Row(stack, Theme.LabelField("Saldo que queda pendiente (total " + Theme.Money(total) + ")"), 0, Theme.Space.Xs);
+            amount = new NumericUpDown
+            {
+                Font = Theme.Emphasis, DecimalPlaces = 2, Minimum = 0.01m, Maximum = Math.Max(0.01m, total), Value = Math.Max(0.01m, total), ThousandsSeparator = true
+            };
+            amount.ValueChanged += (s, e) => UpdatePaid();
+            var amountField = Theme.Field(amount, Theme.Dim.Control);
+            amountField.Dock = DockStyle.Fill;
+            DialogKit.Row(stack, amountField, 0, Theme.Space.Xs);
+            paidLabel = Theme.Label("", 10.5f, FontStyle.Regular, Theme.Muted);
+            DialogKit.Row(stack, paidLabel, 0, Theme.Space.Md);
+
+            DialogKit.Row(stack, Theme.LabelField("Dueña que autoriza"), 0, Theme.Space.Xs);
+            ownerBox = Theme.Combo();
+            ownerBox.Dock = DockStyle.Fill;
+            owners = AppData.ActiveOwners;
+            foreach (var owner in owners) ownerBox.Items.Add(owner.Name);
+            var current = owners.FindIndex(x => AppSession.CurrentUser != null && x.Id == AppSession.CurrentUser.Id);
+            if (ownerBox.Items.Count > 0) ownerBox.SelectedIndex = current >= 0 ? current : 0;
+            DialogKit.Row(stack, ownerBox, 0, Theme.Space.Md);
+
+            DialogKit.Row(stack, Theme.LabelField("PIN de la dueña"), 0, Theme.Space.Xs);
+            pinBox = Theme.TextBox();
+            pinBox.UseSystemPasswordChar = true;
+            pinBox.MaxLength = 8;
+            pinBox.KeyPress += (s, e) => { if (!char.IsControl(e.KeyChar) && !char.IsDigit(e.KeyChar)) e.Handled = true; };
+            var pinField = Theme.Field(pinBox, Theme.Dim.Field);
+            pinField.Dock = DockStyle.Fill;
+            DialogKit.Row(stack, pinField, 0, Theme.Space.Md);
+
+            DialogKit.Row(stack, Theme.LabelField("Motivo (de 3 a 160 caracteres)"), 0, Theme.Space.Xs);
+            reasonBox = Theme.TextBox("Por ejemplo: pagará mañana el resto por Yape");
+            reasonBox.MaxLength = 160;
+            var reasonField = Theme.Field(reasonBox, Theme.Dim.Field);
+            reasonField.Dock = DockStyle.Fill;
+            DialogKit.Row(stack, reasonField);
+
+            var cancel = Theme.Button("Cancelar", ButtonVariant.Secondary);
+            cancel.DialogResult = DialogResult.Cancel;
+            var authorize = Theme.Button("Autorizar", ButtonVariant.Primary);
+            authorize.Click += Authorize_Click;
+            Controls.Add(body);
+            Controls.Add(DialogKit.Actions(null, authorize, cancel));
+            Controls.Add(DialogKit.Header("Dejar saldo pendiente", "Requiere el PIN de la dueña."));
+            CancelButton = cancel;
+            AcceptButton = authorize;
+            UpdatePaid();
+            Theme.FitDialogToWorkingArea(this);
+        }
+
+        private void UpdatePaid()
+        {
+            paidLabel.Text = "Se cobra ahora: " + Theme.Money(total - amount.Value);
+        }
+
+        private void Authorize_Click(object sender, EventArgs e)
+        {
+            if (ownerBox.SelectedIndex < 0 || ownerBox.SelectedIndex >= owners.Count)
+            {
+                Theme.Message(this, Tone.Warning, "Elija la dueña que autoriza el saldo pendiente.", "Autorización");
+                return;
+            }
+            var reason = (reasonBox.Text ?? "").Trim();
+            if (!Validation.IsValidRequiredText(reason, 3, 160))
+            {
+                Theme.Message(this, Tone.Warning, "Ingrese un motivo de 3 a 160 caracteres.", "Autorización");
+                return;
+            }
+            var owner = owners[ownerBox.SelectedIndex];
+            string error;
+            try
+            {
+                error = AppData.CheckOwnerAuthorization(owner.Id, pinBox.Text);
+            }
+            catch (MySqlConnector.MySqlException ex)
+            {
+                AppData.LogError(ex, "Autorizar saldo pendiente (base de datos)");
+                Theme.Message(this, Tone.Danger, AppData.DescribeDatabaseError(ex), "Autorización");
+                return;
+            }
+            if (error != null)
+            {
+                pinBox.Clear();
+                pinBox.Focus();
+                Theme.Message(this, Tone.Warning, error, "Autorización");
+                return;
+            }
+            Authorization = new PendingBalanceAuthorization
+            {
+                Amount = amount.Value, OwnerUserId = owner.Id, OwnerName = owner.Name, OwnerPin = pinBox.Text, Reason = reason
+            };
             DialogResult = DialogResult.OK;
             Close();
         }
@@ -312,7 +494,7 @@ namespace EdenPOS
     {
         public SaleCompleteDialog(Receipt receipt, decimal change)
         {
-            DialogKit.Prepare(this, "Venta completada", 480, 560);
+            DialogKit.Prepare(this, "Venta completada", 480, 560 + (receipt.PendingBalance > 0m ? 80 : 0));
 
             var body = DialogKit.Body();
             body.Padding = new Padding(Theme.Space.Xl, Theme.Space.Xl, Theme.Space.Xl, Theme.Space.Md);
@@ -334,6 +516,11 @@ namespace EdenPOS
             if (receipt.Comprobante != null) AddDetail(layout, "Comprobante", "Boleta " + receipt.Comprobante.Documento + " (simulada)", Theme.Ink);
             AddDetail(layout, "Medio de pago", receipt.PaymentMethod, Theme.Ink);
             if (receipt.Discount > 0m) AddDetail(layout, PromotionName(receipt.PromotionId), "−" + Theme.Money(receipt.Discount), Theme.Success);
+            if (receipt.PendingBalance > 0m)
+            {
+                AddDetail(layout, "Pagado ahora", Theme.Money(receipt.PaidAtVisit), Theme.Ink);
+                AddDetail(layout, "Saldo pendiente", Theme.Money(receipt.PendingBalance), Theme.Warning);
+            }
             if (change > 0) AddDetail(layout, "Vuelto", Theme.Money(change), Theme.Ink);
 
             var export = Theme.Button("Guardar recibo", ButtonVariant.Secondary);
@@ -393,6 +580,11 @@ namespace EdenPOS
                 }
                 text.AppendLine("TOTAL: " + Theme.Money(receipt.Total));
                 text.AppendLine("PAGO: " + receipt.PaymentMethod);
+                if (receipt.PendingBalance > 0m)
+                {
+                    text.AppendLine("PAGADO: " + Theme.Money(receipt.PaidAtVisit));
+                    text.AppendLine("SALDO PENDIENTE: " + Theme.Money(receipt.PendingBalance) + (receipt.BalanceCollectedAt.HasValue ? " (cobrado)" : ""));
+                }
                 text.AppendLine("CLIENTE: " + receipt.CustomerName);
                 if (!string.IsNullOrWhiteSpace(receipt.CustomerDni)) text.AppendLine("DNI: " + receipt.CustomerDni);
                 File.WriteAllText(save.FileName, text.ToString(), Encoding.UTF8);
@@ -751,9 +943,11 @@ namespace EdenPOS
         {
             var date = datePicker.Value.Date;
             List<Receipt> paid;
+            List<Receipt> all;
             try
             {
-                paid = AppData.Receipts.Where(x => x.Status == "Pagado" && x.CreatedAt.Date == date).ToList();
+                all = AppData.Receipts;
+                paid = all.Where(x => x.Status == "Pagado" && x.CreatedAt.Date == date).ToList();
             }
             catch (MySqlConnector.MySqlException ex)
             {
@@ -762,12 +956,15 @@ namespace EdenPOS
                 Theme.Message(this, Tone.Danger, AppData.DescribeDatabaseError(ex), "Resumen de pagos");
                 return;
             }
-            var cash = paid.Sum(x => x.CashPaid);
-            var yape = paid.Sum(x => x.YapePaid);
+            // RN-01: lo pagado en las visitas del día más los saldos pendientes cobrados ese día (de ventas de cualquier fecha).
+            var cash = Receipt.CashBetween(all, date, date.AddDays(1));
+            var yape = Receipt.YapeBetween(all, date, date.AddDays(1));
+            var collected = all.Count(x => x.Status == "Pagado" && x.BalanceCollectedAt.HasValue && x.BalanceCollectedAt.Value.Date == date);
             cashValue.Text = Theme.Money(cash);
             yapeValue.Text = Theme.Money(yape);
-            ticketCount.Text = paid.Count + (paid.Count == 1 ? " recibo pagado" : " recibos pagados") + " · Total " + Theme.Money(cash + yape);
-            emptyBanner.Visible = paid.Count == 0;
+            ticketCount.Text = paid.Count + (paid.Count == 1 ? " recibo pagado" : " recibos pagados") +
+                (collected > 0 ? " y " + collected + (collected == 1 ? " saldo cobrado" : " saldos cobrados") : "") + " · Total " + Theme.Money(cash + yape);
+            emptyBanner.Visible = paid.Count == 0 && collected == 0;
         }
     }
 

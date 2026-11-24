@@ -1223,7 +1223,10 @@ namespace EdenPOS
                                                // Al restaurar desde Supabase, RestoreTables vuelve a deducir el tipo (ALQUILERES o cargo > 0 = Implemento).
                                                !(name == "producto" && c.Key == "tipo") &&
                                                !(name == "cliente" && c.Key == "consentimiento_revocado") &&
-                                               !(name == "comprobante" && c.Key == "mensaje_respuesta")).ToList();
+                                               !(name == "comprobante" && c.Key == "mensaje_respuesta") &&
+                                               // RN-01 / RF-17: saldo pendiente, su cobro y hora de ingreso, por ahora solo en la base local
+                                               // (Supabase aún puede no tener las columnas; devdb/supabase/01_esquema_replica.sql ya las agrega).
+                                               !(name == "recibo" && AppData.ReceiptBalanceColumns.Any(x => x.Key == c.Key))).ToList();
                     var names = kept.Select(c => c.Key).ToArray();
                     var info = new ReplicaTableInfo
                     {

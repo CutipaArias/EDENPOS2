@@ -120,6 +120,10 @@ namespace EdenPOS
                 // RF-21: último mensaje del emisor simulado, para la lista de boletas no enviadas (devdb/migraciones/009).
                 existing = ReadColumnNames(connection, "comprobante");
                 AddColumnIfMissing(connection, existing, "comprobante", "mensaje_respuesta", "VARCHAR(200) NULL");
+                // RN-01 / RF-17: saldo pendiente autorizado, su cobro posterior y hora de ingreso de la visita (devdb/migraciones/008_visitas_saldo.sql).
+                existing = ReadColumnNames(connection, "recibo");
+                foreach (var column in ReceiptBalanceColumns)
+                    AddColumnIfMissing(connection, existing, "recibo", column.Key, column.Value);
             }
         }
 
@@ -130,6 +134,20 @@ namespace EdenPOS
                 "UPDATE producto SET tipo = 'Implemento' WHERE tipo <> 'Implemento' AND (cargo_perdida > 0 OR UPPER(TRIM(categoria)) = 'ALQUILERES')", connection, transaction))
                 command.ExecuteNonQuery();
         }
+
+        // Columnas de recibo agregadas por RN-01 / RF-17 (nombre y definición MySQL). La réplica en Supabase las omite (SupabaseReplica.cs).
+        internal static readonly KeyValuePair<string, string>[] ReceiptBalanceColumns =
+        {
+            new KeyValuePair<string, string>("saldo_pendiente", "DECIMAL(10,2) NOT NULL DEFAULT 0"),
+            new KeyValuePair<string, string>("saldo_autorizado_por", "VARCHAR(60) NULL"),
+            new KeyValuePair<string, string>("saldo_cobrado_at", "DATETIME NULL"),
+            new KeyValuePair<string, string>("saldo_cobrado_medio", "VARCHAR(10) NULL"),
+            new KeyValuePair<string, string>("saldo_cobrado_efectivo", "DECIMAL(10,2) NOT NULL DEFAULT 0"),
+            new KeyValuePair<string, string>("saldo_cobrado_yape", "DECIMAL(10,2) NOT NULL DEFAULT 0"),
+            new KeyValuePair<string, string>("saldo_cobrado_por", "VARCHAR(60) NULL"),
+            new KeyValuePair<string, string>("saldo_id_sesion", "CHAR(32) NULL"),
+            new KeyValuePair<string, string>("ingreso_at", "DATETIME NULL")
+        };
 
         private static HashSet<string> ReadColumnNames(MySqlConnection connection, string table)
         {
@@ -941,14 +959,24 @@ namespace EdenPOS
         // expectedDiscount >= 0: descuento y promoción (expectedPromotionId, null = ninguna) que el diálogo de cobro mostró al cajero. AddReceipt
         // siempre recalcula la promoción dentro de su transacción; si difiere de lo mostrado, cancela para volver a cobrar.
         public static Receipt AddReceipt(List<ReceiptLine> lines, string customer, string customerDni, string method, decimal received, decimal cashAmount = -1m, decimal yapeAmount = -1m,
-            decimal expectedDiscount = -1m, string expectedPromotionId = null, string savedTicketId = null, LossReport lossReport = null)
+            decimal expectedDiscount = -1m, string expectedPromotionId = null, string savedTicketId = null, LossReport lossReport = null,
+            PendingBalanceAuthorization pendingBalance = null)
         {
             // lossReport (RF-19): lo que no se devolvió de la visita; obligatorio si el ticket guardado tiene llaves. Las líneas de cargo por pérdida
             // (AppData.BuildLossChargeLines) van dentro de "lines" y se validan contra la configuración en esta misma transacción.
+            // pendingBalance (RN-01): la visita termina sin pagar todo. received / cashAmount / yapeAmount son entonces lo pagado ahora
+            // (total - saldo); el saldo exige la autorización de una dueña (PIN) y un motivo, que se validan aquí y no solo en la UI.
             if (lines == null || lines.Count == 0) throw new ArgumentException("El comprobante debe tener al menos una línea.");
             foreach (var line in lines)
                 if (line.Quantity <= 0) throw new ArgumentException("La cantidad de \"" + line.Name + "\" debe ser mayor que cero.");
             if (string.IsNullOrWhiteSpace(method)) throw new ArgumentException("Seleccione un medio de pago.");
+            var pending = pendingBalance == null ? 0m : Math.Round(pendingBalance.Amount, 2);
+            if (pendingBalance != null)
+            {
+                if (pending <= 0m) throw new ArgumentException("El saldo pendiente debe ser mayor que cero.");
+                if (!Validation.IsValidRequiredText(pendingBalance.Reason, 3, 160))
+                    throw new ArgumentException("Ingrese el motivo del saldo pendiente (de 3 a 160 caracteres).");
+            }
             lock (Sync)
             {
                 Receipt receipt;
@@ -975,6 +1003,15 @@ namespace EdenPOS
                         if (!LockSavedTicket(connection, transaction, savedTicketId))
                             throw new SavedTicketUnavailableException();
                     }
+                    // RF-17: la hora de creación del ticket es el ingreso de la visita (duración = ingreso -> cobro).
+                    DateTime? checkInAt = null;
+                    if (hasSavedTicket)
+                        using (var command = new MySqlCommand("SELECT created_at FROM ticket_guardado WHERE id_ticket = @id", connection, transaction))
+                        {
+                            command.Parameters.AddWithValue("@id", savedTicketId);
+                            var raw = command.ExecuteScalar();
+                            if (raw != null && raw != DBNull.Value) checkInAt = Convert.ToDateTime(raw, CultureInfo.InvariantCulture);
+                        }
                     var ticketLockers = new List<int>();
                     if (hasSavedTicket)
                         using (var command = new MySqlCommand("SELECT numero FROM casillero_llave WHERE id_ticket = @id ORDER BY numero FOR UPDATE", connection, transaction))
@@ -1042,18 +1079,32 @@ namespace EdenPOS
                     // RN-11: por encima de S/ 700 (total ya con descuento) el DNI es obligatorio. Se lanza antes de escribir nada.
                     if (receipt.Total > DniObligatorioDesde && !Validation.IsValidDni(receipt.CustomerDni))
                         throw new ArgumentException("Las ventas mayores a " + Theme.Money(DniObligatorioDesde) + " requieren un DNI válido de 8 dígitos del cliente. Ingrese el DNI para cobrar.");
-                    receipt.CashAmount = Math.Round(cashAmount >= 0m ? cashAmount : method == "Efectivo" ? receipt.Total : 0m, 2);
-                    receipt.YapeAmount = Math.Round(yapeAmount >= 0m ? yapeAmount : method == "Yape" ? receipt.Total : 0m, 2);
+                    // RN-01: saldo pendiente. Pagado + saldo = total; el saldo no puede superar el total ni dejar un pago negativo.
+                    AppUser authorizer = null;
+                    if (pendingBalance != null)
+                    {
+                        if (pending > receipt.Total)
+                            throw new ArgumentException("El saldo pendiente (" + Theme.Money(pending) + ") no puede ser mayor que el total (" + Theme.Money(receipt.Total) + ").");
+                        authorizer = VerifyOwnerAuthorization(connection, transaction, pendingBalance.OwnerUserId, pendingBalance.OwnerPin);
+                        receipt.PendingBalance = pending;
+                        receipt.BalanceAuthorizedBy = Clip(authorizer.Name, 60);
+                    }
+                    receipt.CheckInAt = checkInAt;
+                    var paidNow = receipt.Total - pending;
+                    // Efectivo y Yape guardan exactamente lo pagado; en Mixto lo indica el cajero y debe sumar lo pagado.
+                    receipt.CashAmount = Math.Round(method == "Mixto" ? cashAmount : method == "Efectivo" ? paidNow : 0m, 2);
+                    receipt.YapeAmount = Math.Round(method == "Mixto" ? yapeAmount : method == "Yape" ? paidNow : 0m, 2);
                     // Pago validado en el servidor (no solo en el diálogo de cobro).
-                    if (method == "Efectivo" && receipt.AmountReceived < receipt.Total)
-                        throw new ArgumentException("El efectivo recibido (" + Theme.Money(receipt.AmountReceived) + ") es menor que el total (" + Theme.Money(receipt.Total) + ").");
+                    if (method == "Efectivo" && receipt.AmountReceived < paidNow)
+                        throw new ArgumentException("El efectivo recibido (" + Theme.Money(receipt.AmountReceived) + ") es menor que " +
+                            (pending > 0m ? "lo que se paga ahora (" + Theme.Money(paidNow) + ")." : "el total (" + Theme.Money(receipt.Total) + ")."));
                     if (method == "Mixto")
                     {
                         if (cashAmount < 0m || yapeAmount < 0m)
                             throw new ArgumentException("En pago mixto indique los montos de efectivo y Yape (no pueden ser negativos).");
-                        if (receipt.CashAmount + receipt.YapeAmount != Math.Round(receipt.Total, 2))
+                        if (receipt.CashAmount + receipt.YapeAmount != Math.Round(paidNow, 2))
                             throw new ArgumentException("En pago mixto, efectivo (" + Theme.Money(receipt.CashAmount) + ") más Yape (" + Theme.Money(receipt.YapeAmount) +
-                                ") debe sumar exactamente el total (" + Theme.Money(receipt.Total) + ").");
+                                ") debe sumar exactamente " + (pending > 0m ? "lo que se paga ahora (" + Theme.Money(paidNow) + ")." : "el total (" + Theme.Money(receipt.Total) + ")."));
                     }
                     foreach (var line in receipt.Lines)
                     {
@@ -1078,8 +1129,9 @@ namespace EdenPOS
                     // id_sesion: turno abierto al vender (RN-02: siempre hay uno). Solo la importación de datos antiguos y la restauración de copias
                     // insertan recibos con id_sesion NULL, y no pasan por aquí.
                     Execute(connection, transaction,
-                        "INSERT INTO recibo (id_recibo, numero, id_sesion, created_at, empleado, cliente_nombre, cliente_dni, medio_pago, monto_recibido, monto_efectivo, monto_yape, descuento_promocion, id_promocion_aplicada, total, estado) " +
-                        "VALUES (@id, @numero, @sesion, @fecha, @empleado, @cliente, @dni, @medio, @recibido, @efectivo, @yape, @descuento, @promocion, @total, @estado)",
+                        "INSERT INTO recibo (id_recibo, numero, id_sesion, created_at, empleado, cliente_nombre, cliente_dni, medio_pago, monto_recibido, monto_efectivo, monto_yape, descuento_promocion, id_promocion_aplicada, total, estado, " +
+                        "saldo_pendiente, saldo_autorizado_por, ingreso_at) " +
+                        "VALUES (@id, @numero, @sesion, @fecha, @empleado, @cliente, @dni, @medio, @recibido, @efectivo, @yape, @descuento, @promocion, @total, @estado, @saldo, @autoriza, @ingreso)",
                         new Dictionary<string, object>
                         {
                             { "@id", receipt.Id }, { "@numero", receipt.Number },
@@ -1090,8 +1142,13 @@ namespace EdenPOS
                             { "@medio", receipt.PaymentMethod }, { "@recibido", receipt.AmountReceived },
                             { "@efectivo", receipt.CashAmount }, { "@yape", receipt.YapeAmount },
                             { "@descuento", receipt.Discount }, { "@promocion", receipt.PromotionId },
-                            { "@total", receipt.Total }, { "@estado", receipt.Status }
+                            { "@total", receipt.Total }, { "@estado", receipt.Status },
+                            { "@saldo", receipt.PendingBalance }, { "@autoriza", receipt.BalanceAuthorizedBy }, { "@ingreso", receipt.CheckInAt }
                         });
+                    if (authorizer != null)
+                        RegistrarAuditoria(connection, transaction, AuditActions.SaldoPendienteAutorizado,
+                            "Recibo #" + receipt.Number + " (" + receipt.CustomerName + "): total " + Theme.Money(receipt.Total) + ", pagado " + Theme.Money(paidNow) +
+                            ", saldo pendiente " + Theme.Money(pending) + ". Autorizó " + authorizer.Name + ". Motivo: " + pendingBalance.Reason.Trim());
                     var order = 0;
                     foreach (var line in receipt.Lines)
                         Execute(connection, transaction,
@@ -1106,6 +1163,9 @@ namespace EdenPOS
                                 { "@precio", Math.Round(line.UnitPrice, 2) }, { "@cantidad", line.Quantity }
                             });
                     // Comprobante electrónico simulado en estado Pendiente, dentro de la misma transacción del cobro.
+                    // RN-01 (decisión): con saldo pendiente la boleta se emite igual por el TOTAL de la venta, no por lo pagado. El servicio ya se
+                    // prestó y la deuda es del cliente: emitir por lo pagado obligaría a un segundo comprobante al cobrar el saldo, y la boleta
+                    // (simulada) no tiene forma de pago a crédito. El cobro posterior del saldo no emite otro comprobante.
                     receipt.Comprobante = CrearComprobante(connection, transaction, receipt);
                     PersistStockChanges(connection, transaction, changes);
                     PersistNextReceiptNumber(connection, transaction, number + 1);
@@ -1684,8 +1744,14 @@ namespace EdenPOS
                     }
                     PersistStockChanges(connection, transaction, changes);
                     var anulado = AnularComprobante(connection, transaction, stored.Id);
+                    // RN-01: se devuelve solo lo pagado (visita + saldo ya cobrado); el saldo que aún se debía queda anulado con el reembolso.
+                    var pendingCancelled = stored.BalanceCollectedAt.HasValue ? 0m : stored.PendingBalance;
                     RegistrarAuditoria(connection, transaction, AuditActions.ReciboReembolsado,
                         "Recibo #" + stored.Number + ", total " + stored.Total.ToString("0.00", CultureInfo.InvariantCulture) +
+                        (stored.PendingBalance > 0m
+                            ? ", devuelto " + stored.TotalPaid.ToString("0.00", CultureInfo.InvariantCulture) +
+                              (pendingCancelled > 0m ? " (saldo pendiente " + pendingCancelled.ToString("0.00", CultureInfo.InvariantCulture) + " anulado)" : "")
+                            : "") +
                         ", motivo: " + (string.IsNullOrWhiteSpace(reason) ? "(sin motivo)" : reason.Trim()) +
                         (anulado == null ? "" : ". Comprobante " + anulado + " anulado (simulado, sin nota de crédito)"));
                     transaction.Commit();
@@ -1823,7 +1889,8 @@ namespace EdenPOS
             var byId = new Dictionary<string, Receipt>();
             var filter = receiptId == null ? "" : "WHERE id_recibo = @id ";
             using (var command = new MySqlCommand(
-                "SELECT id_recibo, numero, created_at, empleado, cliente_nombre, cliente_dni, medio_pago, monto_recibido, monto_efectivo, monto_yape, total, estado, refunded_at, refund_reason, descuento_promocion, id_promocion_aplicada " +
+                "SELECT id_recibo, numero, created_at, empleado, cliente_nombre, cliente_dni, medio_pago, monto_recibido, monto_efectivo, monto_yape, total, estado, refunded_at, refund_reason, descuento_promocion, id_promocion_aplicada, " +
+                "saldo_pendiente, saldo_autorizado_por, saldo_cobrado_at, saldo_cobrado_medio, saldo_cobrado_efectivo, saldo_cobrado_yape, saldo_cobrado_por, ingreso_at " +
                 "FROM recibo " + filter + "ORDER BY created_at, numero", connection, transaction))
             {
                 if (receiptId != null) command.Parameters.AddWithValue("@id", receiptId);
@@ -1848,7 +1915,15 @@ namespace EdenPOS
                             RefundedAt = reader.IsDBNull(12) ? (DateTime?)null : reader.GetDateTime(12),
                             RefundReason = reader.IsDBNull(13) ? null : reader.GetString(13),
                             Discount = reader.GetDecimal(14),
-                            PromotionId = reader.IsDBNull(15) ? null : reader.GetString(15)
+                            PromotionId = reader.IsDBNull(15) ? null : reader.GetString(15),
+                            PendingBalance = reader.GetDecimal(16),
+                            BalanceAuthorizedBy = reader.IsDBNull(17) ? null : reader.GetString(17),
+                            BalanceCollectedAt = reader.IsDBNull(18) ? (DateTime?)null : reader.GetDateTime(18),
+                            BalanceCollectedMethod = reader.IsDBNull(19) ? null : reader.GetString(19),
+                            BalanceCollectedCash = reader.GetDecimal(20),
+                            BalanceCollectedYape = reader.GetDecimal(21),
+                            BalanceCollectedBy = reader.IsDBNull(22) ? null : reader.GetString(22),
+                            CheckInAt = reader.IsDBNull(23) ? (DateTime?)null : reader.GetDateTime(23)
                         };
                         receipts.Add(receipt);
                         byId[receipt.Id] = receipt;
@@ -2465,13 +2540,15 @@ namespace EdenPOS
 
         // Ventas por medio = suma SQL con la misma definición que Receipt.CashPaid / YapePaid (Mixto: monto_efectivo / monto_yape; Efectivo o Yape:
         // total), solo recibos Pagado dentro del rango del turno (hora local con hora local): un reembolso saca la venta de su medio.
+        // RN-01: solo entra lo pagado (Efectivo o Yape: total - saldo_pendiente; Mixto ya guarda solo lo pagado) y el saldo cobrado después
+        // entra, por su medio, en el turno en que se paga.
         // Movimientos de caja por medio (RF-04): los que no son Yape (incluidos los anteriores a RF-04) cuentan como efectivo.
         private static ShiftBalance ReadShiftBalance(MySqlConnection connection, MySqlTransaction transaction, Shift shift)
         {
             var balance = new ShiftBalance { OpeningAmount = shift.OpeningAmount };
             using (var command = new MySqlCommand(
-                "SELECT COALESCE(SUM(CASE medio_pago WHEN 'Mixto' THEN monto_efectivo WHEN 'Efectivo' THEN total ELSE 0 END), 0), " +
-                "COALESCE(SUM(CASE medio_pago WHEN 'Mixto' THEN monto_yape WHEN 'Yape' THEN total ELSE 0 END), 0) FROM recibo " +
+                "SELECT COALESCE(SUM(CASE medio_pago WHEN 'Mixto' THEN monto_efectivo WHEN 'Efectivo' THEN total - saldo_pendiente ELSE 0 END), 0), " +
+                "COALESCE(SUM(CASE medio_pago WHEN 'Mixto' THEN monto_yape WHEN 'Yape' THEN total - saldo_pendiente ELSE 0 END), 0) FROM recibo " +
                 "WHERE estado = 'Pagado' AND created_at >= @desde" + (shift.ClosedAt.HasValue ? " AND created_at <= @hasta" : ""), connection, transaction))
             {
                 command.Parameters.AddWithValue("@desde", shift.OpenedAt);
@@ -2481,6 +2558,19 @@ namespace EdenPOS
                     {
                         balance.CashSales = reader.GetDecimal(0);
                         balance.YapeSales = reader.GetDecimal(1);
+                    }
+            }
+            using (var command = new MySqlCommand(
+                "SELECT COALESCE(SUM(saldo_cobrado_efectivo), 0), COALESCE(SUM(saldo_cobrado_yape), 0) FROM recibo " +
+                "WHERE estado = 'Pagado' AND saldo_cobrado_at >= @desde" + (shift.ClosedAt.HasValue ? " AND saldo_cobrado_at <= @hasta" : ""), connection, transaction))
+            {
+                command.Parameters.AddWithValue("@desde", shift.OpenedAt);
+                if (shift.ClosedAt.HasValue) command.Parameters.AddWithValue("@hasta", shift.ClosedAt.Value);
+                using (var reader = command.ExecuteReader())
+                    if (reader.Read())
+                    {
+                        balance.CashSales += reader.GetDecimal(0);
+                        balance.YapeSales += reader.GetDecimal(1);
                     }
             }
             using (var command = new MySqlCommand(

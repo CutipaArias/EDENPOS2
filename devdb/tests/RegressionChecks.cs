@@ -30,6 +30,7 @@ internal static class RegressionChecks
             CheckCustomerConsentDatabase();
             CheckCashRegisterDatabase();
             CheckComprobantesTipoConsentimientoDatabase();
+            CheckPendingBalanceAndVisitsDatabase();
             Console.WriteLine("Correcto: " + checks + " comprobaciones.");
             return 0;
         }
@@ -914,6 +915,256 @@ internal static class RegressionChecks
                     AppSession.SignOut();
                 }
                 Console.WriteLine("SQL: RF-13, RF-21, RF-14 y RNF-09 (FD03) en una base temporal aislada.");
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("EDENPOS_MYSQL_CONNECTION", originalConnection);
+                MySqlConnection.ClearAllPools();
+                Execute(admin, "DROP DATABASE `" + database + "`");
+            }
+        }
+    }
+
+    private static object Member(object target, string name)
+    {
+        var type = target.GetType();
+        var property = type.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        if (property != null) return property.GetValue(target);
+        return type.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic).GetValue(target);
+    }
+
+    // RN-01 (saldo pendiente con autorización de la dueña y cobro posterior) y RF-17 (reporte de visitas): migración, validaciones en AppData,
+    // caja esperada, reportes, reembolso, sexta visita, réplica y copias. Usa una base temporal propia que borra al terminar.
+    private static void CheckPendingBalanceAndVisitsDatabase()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("EDENPOS_TEST_MYSQL_CONNECTION");
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            Console.WriteLine("SQL omitido: configure EDENPOS_TEST_MYSQL_CONNECTION para incluir la prueba de saldo pendiente y visitas (RN-01, RF-17).");
+            return;
+        }
+        Check(AppData.FormatDuration(null) == "—" && AppData.FormatDuration(40) == "40 min" && AppData.FormatDuration(85.4) == "1 h 25 min",
+            "RF-17: formato de la duración de la visita.");
+
+        var builder = new MySqlConnectionStringBuilder(connectionString);
+        var database = "edenpos_test_" + Guid.NewGuid().ToString("N");
+        builder.Database = "";
+        var originalConnection = Environment.GetEnvironmentVariable("EDENPOS_MYSQL_CONNECTION");
+        var newColumns = new[] { "saldo_pendiente", "saldo_autorizado_por", "saldo_cobrado_at", "saldo_cobrado_medio", "saldo_cobrado_efectivo",
+                                 "saldo_cobrado_yape", "saldo_cobrado_por", "saldo_id_sesion", "ingreso_at" };
+        using (var admin = new MySqlConnection(builder.ConnectionString))
+        {
+            admin.Open();
+            Execute(admin, "CREATE DATABASE `" + database + "` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci");
+            try
+            {
+                builder.Database = database;
+                using (var connection = new MySqlConnection(builder.ConnectionString))
+                {
+                    connection.Open();
+                    var schema = File.ReadAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "schema.sql"));
+                    Execute(connection, schema.Substring(schema.IndexOf("CREATE TABLE rol", StringComparison.Ordinal)));
+                    // Base anterior a RN-01 / RF-17: sin las columnas nuevas y con un recibo ya guardado.
+                    Execute(connection, "ALTER TABLE recibo " + string.Join(", ", newColumns.Select(c => "DROP COLUMN " + c)));
+                    Execute(connection, "INSERT INTO recibo (id_recibo, numero, created_at, empleado, cliente_nombre, medio_pago, monto_recibido, monto_efectivo, monto_yape, total, estado) " +
+                                        "VALUES ('antiguo', 900, '2020-01-01 10:00:00', 'Prueba', 'Prueba', 'Efectivo', 10, 10, 0, 10, 'Pagado')");
+                }
+                builder.AllowUserVariables = true;
+                Environment.SetEnvironmentVariable("EDENPOS_MYSQL_CONNECTION", builder.ConnectionString);
+                Func<string, object> scalar = sql =>
+                {
+                    using (var connection = new MySqlConnection(builder.ConnectionString))
+                    {
+                        connection.Open();
+                        using (var command = new MySqlCommand(sql, connection)) return command.ExecuteScalar();
+                    }
+                };
+                Func<Action, string> throws = action =>
+                {
+                    try { action(); return null; }
+                    catch (ArgumentException ex) { return ex.Message; }
+                    catch (InvalidOperationException ex) { return ex.Message; }
+                };
+                var columnsSql = "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'recibo' AND COLUMN_NAME IN (" +
+                                 string.Join(", ", newColumns.Select(c => "'" + c + "'")) + ")";
+
+                AppData.Initialize();
+                Check(Convert.ToInt32(scalar(columnsSql)) == newColumns.Length, "RN-01: la migración debe agregar las 9 columnas nuevas de recibo.");
+                AppData.Initialize();
+                Check(Convert.ToInt32(scalar(columnsSql)) == newColumns.Length, "RN-01: la migración debe ser idempotente.");
+                var old = AppData.Receipts.Single(r => r.Id == "antiguo");
+                Check(old.PendingBalance == 0m && old.CheckInAt == null && old.BalanceAuthorizedBy == null && old.OutstandingBalance == 0m && old.CashPaid == 10m,
+                    "RN-01: un recibo anterior queda sin saldo pendiente ni hora de ingreso.");
+
+                var owner = AppData.Users.First(u => u.Role == UserRoles.Owner && u.Active);
+                var login = AppData.TryLogin(owner.Id, "0000");
+                Check(login.Outcome == AppData.LoginOutcome.Success, "RN-01: debe iniciar sesión la dueña de la base de prueba.");
+                AppSession.SignIn(login.User);
+                var worker = AppData.SaveUser(null, "Cajera Prueba", "1234", UserRoles.Worker);
+                AppSession.SignIn(AppData.Users.First(u => u.Id == worker.Id));
+                AppData.OpenNewShift(100m);
+
+                var sauna = AppData.Products.First(p => p.Category == "SAUNA" && p.Name == "AMIGOS X3");
+                Func<List<ReceiptLine>> saunaLines = () => new List<ReceiptLine> { new ReceiptLine { ProductId = sauna.Id, Name = sauna.Name, UnitPrice = sauna.Price, Quantity = 1 } };
+                var total = sauna.Price;   // 48
+                Func<decimal, string, string, PendingBalanceAuthorization> auth = (amount, id, pin) =>
+                    new PendingBalanceAuthorization { Amount = amount, OwnerUserId = id, OwnerPin = pin, Reason = "Pagará mañana por Yape" };
+                var receiptsBefore = AppData.Receipts.Count;
+
+                // Validaciones en AppData (no solo en la UI): nada se registra si fallan.
+                var message = throws(() => AppData.AddReceipt(saunaLines(), "Ana", "", "Efectivo", 28m, pendingBalance: auth(20m, owner.Id, "9999")));
+                Check(message != null && message.Contains("PIN"), "RN-01: un PIN equivocado de la dueña rechaza el cobro.");
+                message = throws(() => AppData.AddReceipt(saunaLines(), "Ana", "", "Efectivo", 28m, pendingBalance: auth(20m, worker.Id, "1234")));
+                Check(message != null && message.Contains("dueña"), "RN-01: un trabajador no puede autorizar un saldo pendiente.");
+                var shortReason = auth(20m, owner.Id, "0000"); shortReason.Reason = "ab";
+                message = throws(() => AppData.AddReceipt(saunaLines(), "Ana", "", "Efectivo", 28m, pendingBalance: shortReason));
+                Check(message != null && message.Contains("motivo"), "RN-01: el motivo de 3 a 160 caracteres es obligatorio.");
+                var longReason = auth(20m, owner.Id, "0000"); longReason.Reason = new string('x', 161);
+                Check(throws(() => AppData.AddReceipt(saunaLines(), "Ana", "", "Efectivo", 28m, pendingBalance: longReason)) != null, "RN-01: el motivo no puede pasar de 160 caracteres.");
+                message = throws(() => AppData.AddReceipt(saunaLines(), "Ana", "", "Efectivo", 0m, pendingBalance: auth(total + 1m, owner.Id, "0000")));
+                Check(message != null && message.Contains("mayor que el total"), "RN-01: el saldo no puede superar el total.");
+                Check(throws(() => AppData.AddReceipt(saunaLines(), "Ana", "", "Efectivo", 48m, pendingBalance: auth(0m, owner.Id, "0000"))) != null,
+                    "RN-01: un saldo de cero no es un saldo pendiente.");
+                message = throws(() => AppData.AddReceipt(saunaLines(), "Ana", "", "Efectivo", 27m, pendingBalance: auth(20m, owner.Id, "0000")));
+                Check(message != null && message.Contains("menor"), "RN-01: en efectivo se debe recibir al menos lo que se paga ahora.");
+                message = throws(() => AppData.AddReceipt(saunaLines(), "Ana", "", "Mixto", 0m, 10m, 10m, pendingBalance: auth(20m, owner.Id, "0000")));
+                Check(message != null && message.Contains("sumar exactamente"), "RN-01: pagado + saldo debe ser igual al total.");
+                message = throws(() => AppData.AddReceipt(saunaLines(), "Ana", "", "Efectivo", 40m));
+                Check(message != null, "RN-01: sin autorización la visita no termina con saldo (pago incompleto rechazado).");
+                Check(AppData.Receipts.Count == receiptsBefore && Convert.ToInt32(scalar("SELECT COUNT(*) FROM auditoria WHERE accion = 'SALDO_PENDIENTE_AUTORIZADO'")) == 0,
+                    "RN-01: un cobro rechazado no deja recibo ni auditoría.");
+
+                // Comprobación previa del diálogo: cuenta los intentos fallidos como el inicio de sesión.
+                var check = AppData.CheckOwnerAuthorization(owner.Id, "1111");
+                Check(check != null && check.Contains("PIN incorrecto") && Convert.ToInt32(scalar("SELECT intentos_fallidos FROM usuario WHERE id_usuario = " + owner.Id)) == 1,
+                    "RN-01: un PIN equivocado en la autorización cuenta como intento fallido.");
+                Check(AppData.CheckOwnerAuthorization(owner.Id, "0000") == null && Convert.ToInt32(scalar("SELECT intentos_fallidos FROM usuario WHERE id_usuario = " + owner.Id)) == 0,
+                    "RN-01: el PIN correcto autoriza y reinicia el contador.");
+                Check(AppData.CheckOwnerAuthorization(worker.Id, "1234") != null, "RN-01: un trabajador no aparece como autorizador válido.");
+                Check(AppData.ActiveOwners.Count == 1 && AppData.ActiveOwners[0].Id == owner.Id, "RN-01: solo las dueñas activas pueden autorizar.");
+
+                // Visita desde un ticket guardado con llave, con saldo pendiente autorizado.
+                var ticket = AppData.SaveTicket(saunaLines(), "Ana Pérez", "", "Ana", 5);
+                scalar("UPDATE ticket_guardado SET created_at = DATE_SUB(NOW(), INTERVAL 90 MINUTE) WHERE id_ticket = '" + ticket.Id + "'");
+                var visit = AppData.AddReceipt(saunaLines(), "Ana Pérez", "", "Efectivo", 30m, savedTicketId: ticket.Id,
+                    lossReport: new LossReport { ReturnedKeys = new List<int> { 5 } }, pendingBalance: auth(20m, owner.Id, "0000"));
+                var stored = AppData.Receipts.Single(r => r.Id == visit.Id);
+                Check(stored.Total == total && stored.PendingBalance == 20m && stored.PaidAtVisit == 28m && stored.CashAmount == 28m && stored.CashPaid == 28m &&
+                      stored.Status == "Pagado" && stored.BalanceAuthorizedBy == owner.Name && stored.OutstandingBalance == 20m,
+                    "RN-01: el recibo guarda el total, lo pagado y el saldo autorizado (pagado + saldo = total).");
+                Check(stored.CheckInAt.HasValue && Math.Abs((stored.CreatedAt - stored.CheckInAt.Value).TotalMinutes - 90) < 2,
+                    "RF-17: ingreso_at guarda la hora de creación del ticket.");
+                Check(Convert.ToString(scalar("SELECT detalle FROM auditoria WHERE accion = 'SALDO_PENDIENTE_AUTORIZADO'")).Contains("Pagará mañana por Yape") &&
+                      Convert.ToString(scalar("SELECT detalle FROM auditoria WHERE accion = 'SALDO_PENDIENTE_AUTORIZADO'")).Contains(owner.Name),
+                    "RN-01: la autorización queda en Auditoría con la dueña y el motivo.");
+                Check(Convert.ToDecimal(scalar("SELECT c.id_recibo IS NOT NULL FROM comprobante c WHERE c.id_recibo = '" + visit.Id + "'")) == 1m && visit.Comprobante.Total == total,
+                    "RN-01: el comprobante simulado se emite por el total.");
+                var shift = AppData.OpenShift;
+                Check(AppData.CalculateExpectedCash(shift) == 128m, "RN-01: la caja esperada suma solo lo pagado (100 + 28).");
+
+                // Venta que no es visita (sin ticket ni SAUNA) y cinco visitas del mismo DNI, una de ellas con todo el saldo pendiente.
+                AppData.AddReceipt(new List<ReceiptLine> { new ReceiptLine { ProductId = null, Name = "Gaseosa", UnitPrice = 5m, Quantity = 1 } }, "Público", "", "Yape", 0m);
+                var fullPending = AppData.AddReceipt(saunaLines(), "Luis", "44444444", "Efectivo", 0m, pendingBalance: auth(total, owner.Id, "0000"));
+                Check(fullPending.PaidAtVisit == 0m && fullPending.CashAmount == 0m && fullPending.PendingBalance == total, "RN-01: se puede dejar todo el total pendiente.");
+                for (var i = 0; i < 4; i++) AppData.AddReceipt(saunaLines(), "Luis", "44444444", "Yape", 0m);
+                var promotion = AppData.CalculatePromotion("44444444", saunaLines());
+                Check(promotion.PromocionId == "SEXTA_VISITA", "RN-03: un recibo con saldo pendiente cuenta como visita para la sexta visita gratis.");
+                Check(AppData.CalculateExpectedCash(shift) == 128m, "RN-01: Yape y saldos no cobrados no cambian la caja esperada.");
+
+                var today = DateTime.Today;
+                var sales = AppData.GetSalesReport(today, today);
+                var cashRow = sales.ByPayment.Single(r => r.Method == "Efectivo");
+                Check(sales.TotalSold == total * 6 + 5m && sales.PendingBalance == 20m + total && sales.PendingCount == 2 && cashRow.Cash == 28m && cashRow.PendingBalance == 20m + total,
+                    "RN-01: el reporte de ventas separa el saldo pendiente y cuenta solo lo pagado en efectivo.");
+
+                // Cobro posterior del saldo.
+                message = throws(() => AppData.CollectBalance(visit.Id, "Mixto", 0m, 15m, 10m));
+                Check(message != null && message.Contains("exactamente"), "RN-01: el cobro del saldo debe ser por el saldo completo.");
+                var collected = AppData.CollectBalance(visit.Id, "Mixto", 0m, 12m, 8m);
+                Check(collected.BalanceCollectedAt.HasValue && collected.BalanceCollectedCash == 12m && collected.BalanceCollectedYape == 8m &&
+                      collected.OutstandingBalance == 0m && collected.TotalPaid == total && collected.PendingBalance == 20m && collected.BalanceCollectedBy == AppData.Users.First(u => u.Id == worker.Id).Name,
+                    "RN-01: el saldo cobrado queda registrado y el recibo ya no debe nada.");
+                Check(Convert.ToString(scalar("SELECT saldo_id_sesion FROM recibo WHERE id_recibo = '" + visit.Id + "'")) == shift.Id, "RN-01: el cobro del saldo queda en el turno abierto.");
+                Check(Convert.ToInt32(scalar("SELECT COUNT(*) FROM auditoria WHERE accion = 'SALDO_COBRADO'")) == 1, "RN-01: el cobro del saldo queda en Auditoría.");
+                Check(AppData.CalculateExpectedCash(shift) == 140m, "RN-01: el efectivo del saldo entra a la caja abierta (128 + 12).");
+                var receiptsNow = AppData.Receipts;
+                Check(Receipt.CashBetween(receiptsNow, today, today.AddDays(1)) == 40m && Receipt.YapeBetween(receiptsNow, today, today.AddDays(1)) == 5m + total * 4 + 8m,
+                    "RN-01: el resumen del día incluye el saldo cobrado.");
+                Check(throws(() => AppData.CollectBalance(visit.Id, "Efectivo", 100m)) != null, "RN-01: un saldo no se cobra dos veces.");
+                sales = AppData.GetSalesReport(today, today);
+                Check(sales.PendingBalance == total && sales.PendingCount == 1 && sales.CollectedCount == 1 && sales.Collected == 20m && sales.CollectedCash == 12m,
+                    "RN-01: el reporte de ventas muestra el saldo cobrado aparte y lo que aún se debe.");
+
+                // Sin turno abierto no se cobra el saldo.
+                AppData.CloseShift(shift.Id, 140m, AppData.CalculateExpectedYape(shift), "Cierre de prueba");
+                message = throws(() => AppData.CollectBalance(fullPending.Id, "Efectivo", total));
+                Check(message != null && message.Contains("turno"), "RN-01: el saldo solo se cobra con un turno abierto.");
+                AppData.OpenNewShift(0m);
+
+                // Visitas (RF-17): el ticket con llave y las cinco ventas SAUNA; la gaseosa no es visita.
+                var visits = AppData.GetVisitReport(today, today);
+                Check(visits.Visits == 6 && visits.Adults == 18 && visits.Children == 0 && visits.People == 18 && visits.ByDay.Count == 1 && visits.ByDay[0].Visits == 6,
+                    "RF-17: visitas y personas del rango (AMIGOS X3 = 3 adultos).");
+                Check(visits.TimedVisits == 1 && visits.AverageMinutes.HasValue && Math.Abs(visits.AverageMinutes.Value - 90) < 2, "RF-17: duración promedio desde el ingreso.");
+                Check(visits.PendingBalance == total && visits.PendingCount == 1 && visits.Total == total * 6, "RF-17: saldo pendiente total de las visitas.");
+                Check(AppData.GetVisitReport(today.AddDays(-3), today.AddDays(-1)).Visits == 0, "RF-17: el rango de fechas filtra las visitas.");
+
+                // Reembolso: devuelve solo lo pagado y anula la deuda.
+                AppSession.SignIn(AppData.Users.First(u => u.Id == owner.Id));
+                AppData.RefundReceipt(AppData.Receipts.Single(r => r.Id == fullPending.Id), "Cliente no volvió");
+                var refunded = AppData.Receipts.Single(r => r.Id == fullPending.Id);
+                Check(refunded.Status == "Reembolsado" && refunded.OutstandingBalance == 0m && refunded.TotalPaid == 0m, "RN-01: el reembolso anula el saldo y no devuelve lo no pagado.");
+                var refundDetail = Convert.ToString(scalar("SELECT detalle FROM auditoria WHERE accion = 'RECIBO_REEMBOLSADO' ORDER BY id_auditoria DESC LIMIT 1"));
+                Check(refundDetail.Contains("devuelto 0.00") && refundDetail.Contains("anulado"), "RN-01: la auditoría del reembolso indica lo devuelto y el saldo anulado.");
+                Check(throws(() => AppData.CollectBalance(fullPending.Id, "Efectivo", total)) != null, "RN-01: el saldo de un recibo reembolsado no se cobra.");
+                visits = AppData.GetVisitReport(today, today);
+                Check(visits.Visits == 5 && visits.PendingBalance == 0m, "RF-17: un recibo reembolsado no cuenta como visita.");
+
+                // Réplica en Supabase: las columnas nuevas de recibo se quedan en la base local.
+                var tables = (System.Collections.IEnumerable)Invoke(typeof(AppData), null, "ReplicaBuildTables");
+                foreach (var info in tables)
+                {
+                    var table = Member(info, "Table");
+                    if ((string)Member(table, "Name") != "recibo") continue;
+                    var columns = (string[])Member(table, "Columns");
+                    Check(columns.Contains("total") && !columns.Any(c => newColumns.Contains(c)), "RN-01: la réplica omite las columnas nuevas de recibo.");
+                }
+
+                // Copia nueva (con las columnas) y copia "antigua" (sin ellas): ambas deben restaurarse.
+                var current = Path.Combine(Path.GetTempPath(), "EdenPOS-rn01-" + Guid.NewGuid().ToString("N") + ".edenbackup");
+                var legacy = Path.Combine(Path.GetTempPath(), "EdenPOS-rn01-" + Guid.NewGuid().ToString("N") + ".edenbackup");
+                try
+                {
+                    AppData.ExportBackup(current);
+                    File.Copy(current, legacy);
+                    using (var zip = System.IO.Compression.ZipFile.Open(legacy, System.IO.Compression.ZipArchiveMode.Update))
+                    {
+                        var entry = zip.GetEntry("tables/recibo.json");
+                        string json;
+                        using (var reader = new StreamReader(entry.Open(), Encoding.UTF8)) json = reader.ReadToEnd();
+                        var serializer = new System.Web.Script.Serialization.JavaScriptSerializer();
+                        var rows = serializer.Deserialize<List<Dictionary<string, object>>>(json);
+                        Check(rows.Count == 8 && rows.All(r => newColumns.All(r.ContainsKey)), "RN-01: la copia de seguridad incluye las columnas nuevas de recibo.");
+                        foreach (var row in rows) foreach (var column in newColumns) row.Remove(column);
+                        entry.Delete();
+                        using (var writer = new StreamWriter(zip.CreateEntry("tables/recibo.json").Open(), new UTF8Encoding(false))) writer.Write(serializer.Serialize(rows));
+                    }
+                    AppData.ImportBackup(legacy);
+                    var restoredLegacy = AppData.Receipts;
+                    Check(restoredLegacy.Count == 8 && restoredLegacy.All(r => r.PendingBalance == 0m && r.CheckInAt == null && r.BalanceCollectedAt == null),
+                        "RN-01: una copia antigua sin las columnas se restaura con saldo 0.");
+                    AppData.ImportBackup(current);
+                    var restored = AppData.Receipts.Single(r => r.Id == visit.Id);
+                    Check(restored.PendingBalance == 20m && restored.BalanceCollectedCash == 12m && restored.CheckInAt.HasValue && restored.BalanceAuthorizedBy == owner.Name,
+                        "RN-01: una copia nueva restaura el saldo, su cobro y la hora de ingreso.");
+                }
+                finally
+                {
+                    if (File.Exists(current)) File.Delete(current);
+                    if (File.Exists(legacy)) File.Delete(legacy);
+                    AppSession.SignOut();
+                }
+                Console.WriteLine("SQL: saldo pendiente (RN-01) y reporte de visitas (RF-17) en una base temporal aislada.");
             }
             finally
             {
