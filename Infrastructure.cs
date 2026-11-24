@@ -807,6 +807,8 @@ namespace EdenPOS
         {
             if (type != InventoryMovementTypes.Perdida && type != InventoryMovementTypes.ConsumoInterno && type != InventoryMovementTypes.Ajuste)
                 throw new ArgumentException("Tipo de movimiento no válido.");
+            // RN-12: solo la dueña ajusta inventario.
+            if (!AppSession.IsOwner) throw new InvalidOperationException("Solo la dueña puede registrar salidas o ajustes de inventario.");
             if (!Validation.IsValidRequiredText(reason, 3, 150)) throw new ArgumentException("Ingrese un motivo de 3 a 150 caracteres.");
             if (type == InventoryMovementTypes.Ajuste)
             {
