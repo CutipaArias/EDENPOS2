@@ -1034,6 +1034,9 @@ namespace EdenPOS
                 var hadSavedTicket = !string.IsNullOrWhiteSpace(loadedSavedTicketId);
                 ClearCurrentTicket();
                 if (hadSavedTicket) RefreshSavedTicketsInfo();
+                // RF-12 / RNF-07: impresión automática solo si "Imprimir recibo al cobrar" está activo en esta PC.
+                // El cobro ya está registrado: un fallo de impresión solo se avisa y se registra en errors.log.
+                ReceiptPrinting.PrintAfterSale(FindForm(), receipt);
                 using (var complete = new SaleCompleteDialog(receipt, change)) complete.ShowDialog(FindForm());
             }
         }

@@ -319,6 +319,23 @@ namespace EdenPOS
                 stack.Add(boleta);
             }
 
+            // Impresión en la impresora térmica de esta PC (RF-12 / RNF-07).
+            stack.Add(Gap(Theme.Space.Lg));
+            var printRow = new Panel { Dock = DockStyle.Top, Height = Theme.Dim.Control, BackColor = Color.Transparent };
+            var print = Theme.Button("Imprimir", ButtonVariant.Primary);
+            print.Width = 140;
+            print.Dock = DockStyle.Right;
+            print.Click += (s, e) => PrintSelected(false);
+            var previewButton = Theme.Button("Vista previa", ButtonVariant.Secondary);
+            previewButton.Width = 150;
+            previewButton.Dock = DockStyle.Right;
+            previewButton.Click += (s, e) => PrintSelected(true);
+            var printGap = new Panel { Dock = DockStyle.Right, Width = Theme.Space.Sm, BackColor = Color.Transparent };
+            printRow.Controls.Add(previewButton);
+            printRow.Controls.Add(printGap);
+            printRow.Controls.Add(print);
+            stack.Add(printRow);
+
             // Reembolso.
             stack.Add(Gap(Theme.Space.Lg));
             if (!refunded && !AppSession.IsOwner)
@@ -355,6 +372,15 @@ namespace EdenPOS
             var line = Theme.Separator();
             line.Dock = DockStyle.Top;
             return line;
+        }
+
+        private void PrintSelected(bool preview)
+        {
+            if (selected == null) return;
+            ReceiptPrinting.PrintReceipt(FindForm(), selected, preview);
+            // El estado de la boleta pudo cambiar (se relee antes de imprimir): se actualiza el detalle.
+            // Se difiere: RenderDetail desecha el botón que está atendiendo este clic.
+            if (!IsDisposed && IsHandleCreated) BeginInvoke(new Action(() => { if (!IsDisposed) RenderDetail(); }));
         }
 
         private void Refund_Click(object sender, EventArgs e)

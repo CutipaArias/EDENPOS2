@@ -69,6 +69,7 @@ namespace EdenPOS
             // settings.json ya no se crea: solo guarda datos locales (cadena de conexión) y es opcional.
             // Los recibos viven en MySQL (recibo / recibo_linea); ya no se crea receipts.json.
             EnsureUserLockColumns();
+            EnsurePrinterTable();   // RF-12 / RNF-07: impresora por PC (ReceiptPrinting.cs)
             SeedProductsIfEmpty();
             MigrateDefaults();
         }
@@ -2444,6 +2445,8 @@ namespace EdenPOS
 
         // ---- Copia de seguridad (formato 2: una tabla de MySQL por archivo JSON dentro de un zip) ----
         // Orden fijo según las llaves foráneas (padres primero). Es la única fuente de nombres de tabla para la copia.
+        // impresora_pc NO está a propósito: guarda la impresora de cada PC (por nombre de equipo) y no debe viajar a otra PC
+        // ni a la réplica de Supabase (que usa esta misma lista).
         private static readonly string[] BackupTables =
         {
             "rol", "usuario", "configuracion", "cliente", "producto", "producto_variante", "movimiento_inventario",
