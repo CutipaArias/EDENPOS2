@@ -96,7 +96,7 @@ namespace EdenPOS
             grid.DefaultCellStyle.WrapMode = DataGridViewTriState.False;
             grid.AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.None;
             grid.CellPainting += PaintActionPill;
-            var block = ReportUi.Block("Acciones registradas", "Eliminaciones, reembolsos, cambios de precio, diferencias de caja, bloqueos de cuenta y cierres de sesión por inactividad. Solo lectura.", grid, empty);
+            var block = ReportUi.Block("Acciones registradas", "Eliminaciones, reembolsos, cambios de precio, cierres y diferencias de caja, bloqueos de cuenta y cierres de sesión por inactividad. Solo lectura.", grid, empty);
             var blockHeader = block.Controls.OfType<FlowLayoutPanel>().FirstOrDefault();
             if (blockHeader != null) blockHeader.Controls.Add(countLabel);
             root.Controls.Add(block, 0, 3);
@@ -129,6 +129,7 @@ namespace EdenPOS
                 case AuditActions.DatosImportados:
                 case AuditActions.CuentaDesbloqueada:
                 case AuditActions.LlaveLiberada:
+                case AuditActions.CajaCerrada:
                     return Tone.Info;
                 default:
                     return Tone.Neutral;
@@ -220,6 +221,7 @@ namespace EdenPOS
                 case AuditActions.ProductoEliminado: return "Producto eliminado";
                 case AuditActions.ReciboReembolsado: return "Recibo reembolsado";
                 case AuditActions.CajaDiferencia: return "Diferencia de caja";
+                case AuditActions.CajaCerrada: return "Cierre de caja";
                 case AuditActions.UsuarioEliminado: return "Usuario eliminado";
                 case AuditActions.UsuarioDesactivado: return "Usuario desactivado";
                 case AuditActions.PrecioCambiado: return "Precio cambiado";

@@ -656,7 +656,10 @@ try {
         if (-not $d.isToday) {
             $open = [EdenPOS.AppData]::OpenShift
             $expected = [EdenPOS.AppData]::CalculateExpectedCash($open)
-            [EdenPOS.AppData]::CloseShift($open.Id, $expected + $d.diff)
+            # RF-05: el Yape confirmado cuadra con el esperado; RN-09: con diferencia de efectivo la observacion es obligatoria.
+            $expectedYape = [EdenPOS.AppData]::CalculateExpectedYape($open)
+            $note = $(if ($d.diff -ne 0) { 'Diferencia de prueba al contar' } else { $null })
+            [void][EdenPOS.AppData]::CloseShift($open.Id, $expected + $d.diff, $expectedYape, $note)
         }
         Wait-Invoices
 
@@ -685,6 +688,7 @@ try {
                 switch ($row.accion) {
                     'RECIBO_REEMBOLSADO' { if ($row.detalle -match '^Recibo #(\d+),') { $t = $byNum[$Matches[1]].refundTime } }
                     'COMPROBANTE_RECHAZADO' { if ($row.detalle -match 'recibo #(\d+)\)') { $t = $byNum[$Matches[1]].time.AddSeconds(1) } }
+                    'CAJA_CERRADA' { $t = $d.close }
                     'CAJA_DIFERENCIA' { $t = $d.close }
                     default { if ($ownerTimes.ContainsKey($row.accion)) { $t = $ownerTimes[$row.accion] } }
                 }

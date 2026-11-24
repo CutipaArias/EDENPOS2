@@ -29,6 +29,8 @@ namespace EdenPOS
         public const string ProductoEliminado = "PRODUCTO_ELIMINADO";
         public const string ReciboReembolsado = "RECIBO_REEMBOLSADO";
         public const string CajaDiferencia = "CAJA_DIFERENCIA";
+        // RNF-04: todo cierre de caja, con esperado y contado de efectivo y Yape (CAJA_DIFERENCIA se agrega además si no cuadra).
+        public const string CajaCerrada = "CAJA_CERRADA";
         public const string UsuarioEliminado = "USUARIO_ELIMINADO";
         public const string UsuarioDesactivado = "USUARIO_DESACTIVADO";
         public const string PrecioCambiado = "PRECIO_CAMBIADO";
@@ -180,6 +182,18 @@ namespace EdenPOS
         public bool IsOpen { get; set; }
         // RN-09: observación del cierre cuando hubo diferencia (null si cuadró).
         public string ClosingNote { get; set; }
+        // RF-05: Yape esperado al cerrar y Yape confirmado en la app (null en turnos abiertos o cerrados antes de RF-05).
+        public decimal? ExpectedYape { get; set; }
+        public decimal? CountedYape { get; set; }
+    }
+
+    // RF-04: medio de un movimiento de caja. Solo los de Efectivo cambian el efectivo esperado en el cajón.
+    public static class CashMedia
+    {
+        public const string Efectivo = "Efectivo";
+        public const string Yape = "Yape";
+
+        public static bool IsValid(string medium) { return medium == Efectivo || medium == Yape; }
     }
 
     public sealed class CashMovement
@@ -191,6 +205,23 @@ namespace EdenPOS
         public string Type { get; set; }
         public decimal Amount { get; set; }
         public string Comment { get; set; }
+        // RF-04: Efectivo o Yape (los movimientos anteriores a RF-04 son de Efectivo).
+        public string Medium { get; set; } = CashMedia.Efectivo;
+    }
+
+    // RF-05: saldo esperado de un turno por medio de pago (misma consulta para la pantalla Turno y el cierre).
+    // Las ventas son los recibos Pagado del rango del turno: un recibo reembolsado deja de sumar en su medio.
+    public sealed class ShiftBalance
+    {
+        public decimal OpeningAmount { get; set; }
+        public decimal CashSales { get; set; }
+        public decimal YapeSales { get; set; }
+        public decimal CashMovements { get; set; }
+        public decimal YapeMovements { get; set; }
+        public decimal ExpectedCash { get { return OpeningAmount + CashSales + CashMovements; } }
+        public decimal ExpectedYape { get { return YapeSales + YapeMovements; } }
+        // Proyección del disponible: efectivo esperado en el cajón más lo que debería haber entrado por Yape.
+        public decimal ProjectedAvailable { get { return ExpectedCash + ExpectedYape; } }
     }
 
     public sealed class InventoryMovement

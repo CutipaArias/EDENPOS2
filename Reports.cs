@@ -17,6 +17,10 @@ namespace EdenPOS
         public string ClosingNote { get; set; }
         // Contado - esperado; null mientras el turno sigue abierto.
         public decimal? Difference { get { return CountedAmount.HasValue && ExpectedAmount.HasValue ? CountedAmount.Value - ExpectedAmount.Value : (decimal?)null; } }
+        // RF-05: Yape esperado y confirmado al cerrar (null en turnos abiertos o cerrados antes de RF-05).
+        public decimal? ExpectedYape { get; set; }
+        public decimal? CountedYape { get; set; }
+        public decimal? YapeDifference { get { return CountedYape.HasValue && ExpectedYape.HasValue ? CountedYape.Value - ExpectedYape.Value : (decimal?)null; } }
     }
 
     public sealed class ShiftReport
@@ -27,6 +31,9 @@ namespace EdenPOS
         public decimal ExpectedTotal;     // solo turnos cerrados
         public decimal CountedTotal;      // solo turnos cerrados
         public decimal DifferenceTotal;   // solo turnos cerrados
+        public decimal YapeExpectedTotal;     // solo turnos cerrados con cierre por medio (RF-05)
+        public decimal YapeCountedTotal;
+        public decimal YapeDifferenceTotal;
     }
 
     public sealed class PaymentMethodRow
@@ -108,7 +115,7 @@ namespace EdenPOS
             lock (Sync)
             using (var connection = SqlConnectionFactory.Open())
             using (var command = new MySqlCommand(
-                "SELECT numero, empleado, fecha_apertura, fecha_cierre, monto_inicial, monto_esperado, monto_cierre, observacion_cierre " +
+                "SELECT numero, empleado, fecha_apertura, fecha_cierre, monto_inicial, monto_esperado, monto_cierre, observacion_cierre, yape_esperado, yape_contado " +
                 "FROM sesion_caja WHERE fecha_apertura >= @desde AND fecha_apertura < @hasta ORDER BY fecha_apertura, numero", connection))
             {
                 ReportRange(desde, hasta, command);
@@ -124,7 +131,9 @@ namespace EdenPOS
                             OpeningAmount = reader.GetDecimal(4),
                             ExpectedAmount = reader.IsDBNull(5) ? (decimal?)null : reader.GetDecimal(5),
                             CountedAmount = reader.IsDBNull(6) ? (decimal?)null : reader.GetDecimal(6),
-                            ClosingNote = reader.IsDBNull(7) ? null : reader.GetString(7)
+                            ClosingNote = reader.IsDBNull(7) ? null : reader.GetString(7),
+                            ExpectedYape = reader.IsDBNull(8) ? (decimal?)null : reader.GetDecimal(8),
+                            CountedYape = reader.IsDBNull(9) ? (decimal?)null : reader.GetDecimal(9)
                         };
                         report.Rows.Add(row);
                         report.OpeningTotal += row.OpeningAmount;
@@ -134,6 +143,12 @@ namespace EdenPOS
                             report.ExpectedTotal += row.ExpectedAmount.Value;
                             report.CountedTotal += row.CountedAmount.Value;
                             report.DifferenceTotal += row.Difference.Value;
+                            if (row.YapeDifference.HasValue)
+                            {
+                                report.YapeExpectedTotal += row.ExpectedYape.Value;
+                                report.YapeCountedTotal += row.CountedYape.Value;
+                                report.YapeDifferenceTotal += row.YapeDifference.Value;
+                            }
                         }
                     }
             }

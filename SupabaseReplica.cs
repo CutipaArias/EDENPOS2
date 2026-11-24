@@ -1207,6 +1207,10 @@ namespace EdenPOS
                                                !(name == "usuario" && (c.Key == "intentos_fallidos" || c.Key == "bloqueado_en")) &&
                                                // RN-09: por ahora la observación de cierre se queda solo en la base local (Supabase aún puede no tener la columna).
                                                !(name == "sesion_caja" && c.Key == "observacion_cierre") &&
+                                               // RF-04 / RF-05: medio de los movimientos y Yape esperado/confirmado del cierre, por ahora solo en la base local
+                                               // (Supabase aún puede no tener las columnas; devdb/supabase/01_esquema_replica.sql ya las agrega).
+                                               !(name == "sesion_caja" && (c.Key == "yape_esperado" || c.Key == "yape_contado")) &&
+                                               !(name == "movimiento_caja" && c.Key == "medio") &&
                                                // RF-06 / RNF-09: por ahora el teléfono y el consentimiento del cliente se quedan solo en la base local (Supabase aún puede no tener las columnas).
                                                !(name == "cliente" && (c.Key == "telefono" || c.Key == "consentimiento_datos" || c.Key == "consentimiento_fecha")) &&
                                                !(name == "configuracion" && c.Key == "simular_rechazo_comprobantes") &&

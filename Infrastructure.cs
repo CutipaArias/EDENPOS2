@@ -89,6 +89,12 @@ namespace EdenPOS
                 // RN-09: observación obligatoria cuando el cierre de caja tiene diferencia (devdb/migraciones/002_rn09_observacion_cierre.sql).
                 existing = ReadColumnNames(connection, "sesion_caja");
                 AddColumnIfMissing(connection, existing, "sesion_caja", "observacion_cierre", "VARCHAR(200) NULL");
+                // RF-05: cierre por medio de pago, Yape esperado y Yape confirmado (devdb/migraciones/007_caja_medios.sql).
+                AddColumnIfMissing(connection, existing, "sesion_caja", "yape_esperado", "DECIMAL(10,2) NULL");
+                AddColumnIfMissing(connection, existing, "sesion_caja", "yape_contado", "DECIMAL(10,2) NULL");
+                // RF-04: medio (Efectivo o Yape) de cada movimiento de caja; los anteriores quedan como Efectivo.
+                existing = ReadColumnNames(connection, "movimiento_caja");
+                AddColumnIfMissing(connection, existing, "movimiento_caja", "medio", "VARCHAR(10) NOT NULL DEFAULT 'Efectivo'");
                 // Ajuste "Simular rechazo" de la facturación simulada: antes en settings.json, ahora en la base (devdb/migraciones/003).
                 existing = ReadColumnNames(connection, "configuracion");
                 AddColumnIfMissing(connection, existing, "configuracion", "simular_rechazo_comprobantes", "TINYINT(1) NOT NULL DEFAULT 0");
@@ -267,7 +273,7 @@ namespace EdenPOS
                 lock (Sync)
                 using (var connection = SqlConnectionFactory.Open())
                 using (var command = new MySqlCommand(
-                    "SELECT id_movimiento, id_sesion, created_at, empleado, tipo, importe, comentario FROM movimiento_caja ORDER BY created_at, id_movimiento", connection))
+                    "SELECT id_movimiento, id_sesion, created_at, empleado, tipo, importe, comentario, medio FROM movimiento_caja ORDER BY created_at, id_movimiento", connection))
                 using (var reader = command.ExecuteReader())
                 {
                     var movements = new List<CashMovement>();
@@ -281,7 +287,8 @@ namespace EdenPOS
                             Employee = reader.GetString(3),
                             Type = reader.GetString(4),
                             Amount = reader.GetDecimal(5),
-                            Comment = reader.GetString(6)
+                            Comment = reader.GetString(6),
+                            Medium = reader.GetString(7) == CashMedia.Yape ? CashMedia.Yape : CashMedia.Efectivo
                         });
                     }
                     return movements;
@@ -908,6 +915,9 @@ namespace EdenPOS
             }
         }
 
+        // RN-02: mensaje común de la pantalla de Ventas y de AddReceipt cuando no hay turno abierto.
+        public const string NoOpenShiftMessage = "Abra un turno antes de cobrar.";
+
         // expectedDiscount >= 0: descuento y promoción (expectedPromotionId, null = ninguna) que el diálogo de cobro mostró al cajero. AddReceipt
         // siempre recalcula la promoción dentro de su transacción; si difiere de lo mostrado, cancela para volver a cobrar.
         public static Receipt AddReceipt(List<ReceiptLine> lines, string customer, string customerDni, string method, decimal received, decimal cashAmount = -1m, decimal yapeAmount = -1m,
@@ -971,7 +981,12 @@ namespace EdenPOS
                         if (option == null && product.TrackInventory && product.Stock < line.Quantity)
                             throw new InvalidOperationException("No hay saldo suficiente de " + product.Name + ". Disponible: " + product.Stock + ".");
                     }
-                    var openShift = ReadOpenShift(connection, transaction);
+                    // RN-02: no hay cobro sin caja abierta. LOCK IN SHARE MODE (MariaDB 10.4 no admite FOR SHARE) bloquea en modo compartido la fila
+                    // del turno hasta el Commit: si otra caja lo está cerrando (FOR UPDATE en CloseShift), este cobro espera y luego ve el turno ya
+                    // cerrado; si el cobro llega primero, el cierre espera y lo incluye en el esperado. Se lanza antes de escribir nada.
+                    var openShift = ReadShifts(connection, transaction, "WHERE abierta = 1 ORDER BY fecha_apertura DESC LIMIT 1 LOCK IN SHARE MODE",
+                        new Dictionary<string, object>()).FirstOrDefault();
+                    if (openShift == null) throw new InvalidOperationException(NoOpenShiftMessage);
                     // Promoción recalculada con el historial y la configuración vigentes dentro de esta transacción (RN-03/04/05).
                     var promotion = EvaluatePromotion(connection, transaction, customerDni, regularLines);
                     if (expectedDiscount >= 0m &&
@@ -1040,14 +1055,15 @@ namespace EdenPOS
                             changes.Add(new StockChange(product, null, NewInventoryMovement(product, "Venta", line.Quantity, previous, "Venta #" + receipt.Number, receipt.Id)));
                         }
                     }
-                    // id_sesion: turno abierto al vender (NULL si no hay).
+                    // id_sesion: turno abierto al vender (RN-02: siempre hay uno). Solo la importación de datos antiguos y la restauración de copias
+                    // insertan recibos con id_sesion NULL, y no pasan por aquí.
                     Execute(connection, transaction,
                         "INSERT INTO recibo (id_recibo, numero, id_sesion, created_at, empleado, cliente_nombre, cliente_dni, medio_pago, monto_recibido, monto_efectivo, monto_yape, descuento_promocion, id_promocion_aplicada, total, estado) " +
                         "VALUES (@id, @numero, @sesion, @fecha, @empleado, @cliente, @dni, @medio, @recibido, @efectivo, @yape, @descuento, @promocion, @total, @estado)",
                         new Dictionary<string, object>
                         {
                             { "@id", receipt.Id }, { "@numero", receipt.Number },
-                            { "@sesion", openShift == null ? null : openShift.Id },
+                            { "@sesion", openShift.Id },
                             { "@fecha", receipt.CreatedAt }, { "@empleado", receipt.Employee },
                             { "@cliente", receipt.CustomerName },
                             { "@dni", string.IsNullOrEmpty(receipt.CustomerDni) ? null : receipt.CustomerDni },
@@ -2276,51 +2292,83 @@ namespace EdenPOS
             }
         }
 
-        // RN-09: si el contado no cuadra con el esperado (calculado aquí, dentro de la transacción), la observación es obligatoria.
+        // RF-05 / RN-09: cierre por medio de pago. El esperado de efectivo y el de Yape se calculan aquí, dentro de la transacción; si el efectivo
+        // contado o el Yape confirmado (lo que la dueña ve en su app Yape) no cuadran, la observación es obligatoria.
         // Lanza InvalidOperationException sin cerrar nada cuando falta; ShiftView la pide antes, pero otra caja pudo cambiar el esperado.
-        public static void CloseShift(string id, decimal closingAmount, string observation)
+        // RNF-04: todo cierre queda en la auditoría (CAJA_CERRADA) y, si hay diferencia, además CAJA_DIFERENCIA.
+        public static Shift CloseShift(string id, decimal closingAmount, decimal yapeCounted, string observation)
         {
             observation = string.IsNullOrWhiteSpace(observation) ? null : observation.Trim();
             lock (Sync)
             {
+                Shift shift;
                 using (var connection = SqlConnectionFactory.Open())
                 using (var transaction = connection.BeginTransaction())
                 {
-                    var shift = ReadShifts(connection, transaction, "WHERE id_sesion = @id AND abierta = 1 FOR UPDATE", new Dictionary<string, object> { { "@id", id ?? "" } }).FirstOrDefault();
-                    if (shift == null) return;
-                    shift.ExpectedAmount = CalculateExpectedCash(connection, transaction, shift);
+                    shift = ReadShifts(connection, transaction, "WHERE id_sesion = @id AND abierta = 1 FOR UPDATE", new Dictionary<string, object> { { "@id", id ?? "" } }).FirstOrDefault();
+                    if (shift == null) return null;   // ya cerrado (p. ej. por otra caja)
+                    var balance = ReadShiftBalance(connection, transaction, shift);
+                    shift.ExpectedAmount = Math.Round(balance.ExpectedCash, 2);
+                    shift.ExpectedYape = Math.Round(balance.ExpectedYape, 2);
                     shift.ClosingAmount = Math.Round(closingAmount, 2);
+                    shift.CountedYape = Math.Round(yapeCounted, 2);
                     shift.ClosedAt = NowWithoutFraction();
                     shift.IsOpen = false;
-                    var difference = Math.Round(shift.ClosingAmount, 2) - Math.Round(shift.ExpectedAmount, 2);
-                    if (difference != 0m && !Validation.IsValidRequiredText(observation, 3, 200))
+                    var cashDifference = shift.ClosingAmount - shift.ExpectedAmount;
+                    var yapeDifference = shift.CountedYape.Value - shift.ExpectedYape.Value;
+                    var hasDifference = cashDifference != 0m || yapeDifference != 0m;
+                    if (hasDifference && !Validation.IsValidRequiredText(observation, 3, 200))
                         throw new InvalidOperationException(
-                            "La caja tiene una diferencia de " + Theme.Money(difference) + " (esperado " + Theme.Money(shift.ExpectedAmount) +
+                            "La caja tiene una diferencia (" + DescribeClosingDifference(cashDifference, yapeDifference) + "; esperado: efectivo " +
+                            Theme.Money(shift.ExpectedAmount) + ", Yape " + Theme.Money(shift.ExpectedYape.Value) +
                             "). Escriba una observación de 3 a 200 caracteres para cerrar el turno.");
-                    shift.ClosingNote = difference == 0m ? null : observation;
+                    shift.ClosingNote = hasDifference ? observation : null;
                     Execute(connection, transaction,
-                        "UPDATE sesion_caja SET fecha_cierre = @cierre, monto_cierre = @monto, monto_esperado = @esperado, observacion_cierre = @obs, abierta = 0 WHERE id_sesion = @id",
+                        "UPDATE sesion_caja SET fecha_cierre = @cierre, monto_cierre = @monto, monto_esperado = @esperado, yape_esperado = @yapeEsperado, " +
+                        "yape_contado = @yapeContado, observacion_cierre = @obs, abierta = 0 WHERE id_sesion = @id",
                         new Dictionary<string, object>
                         {
                             { "@id", shift.Id },
                             { "@cierre", shift.ClosedAt.Value },
                             { "@monto", shift.ClosingAmount },
-                            { "@esperado", Math.Round(shift.ExpectedAmount, 2) },
+                            { "@esperado", shift.ExpectedAmount },
+                            { "@yapeEsperado", shift.ExpectedYape.Value },
+                            { "@yapeContado", shift.CountedYape.Value },
                             { "@obs", shift.ClosingNote }
                         });
-                    if (difference != 0m)
+                    var amounts = "efectivo esperado " + AuditMoney(shift.ExpectedAmount) + ", contado " + AuditMoney(shift.ClosingAmount) +
+                                  "; Yape esperado " + AuditMoney(shift.ExpectedYape.Value) + ", confirmado " + AuditMoney(shift.CountedYape.Value);
+                    RegistrarAuditoria(connection, transaction, AuditActions.CajaCerrada,
+                        "Turno #" + shift.Number + " cerrado: " + amounts + (hasDifference ? "" : ". Sin diferencia"));
+                    if (hasDifference)
                         RegistrarAuditoria(connection, transaction, AuditActions.CajaDiferencia,
-                            "Turno #" + shift.Number + ": esperado " + Math.Round(shift.ExpectedAmount, 2).ToString("0.00", CultureInfo.InvariantCulture) +
-                            ", contado " + Math.Round(shift.ClosingAmount, 2).ToString("0.00", CultureInfo.InvariantCulture) +
-                            ", diferencia " + difference.ToString("0.00", CultureInfo.InvariantCulture) + ". Observación: " + shift.ClosingNote);
+                            "Turno #" + shift.Number + ": diferencia de efectivo " + AuditMoney(cashDifference) + ", de Yape " + AuditMoney(yapeDifference) +
+                            ". Observación: " + shift.ClosingNote);
                     transaction.Commit();
                 }
                 RaiseChanged();
+                return shift;
             }
         }
 
-        public static CashMovement AddCashMovement(string type, decimal amount, string comment)
+        private static string AuditMoney(decimal value)
         {
+            return Math.Round(value, 2).ToString("0.00", CultureInfo.InvariantCulture);
+        }
+
+        // Texto de la diferencia por medio ("faltante de efectivo S/ 5.00, sobrante de Yape S/ 2.00"); solo los medios que no cuadran.
+        public static string DescribeClosingDifference(decimal cashDifference, decimal yapeDifference)
+        {
+            var parts = new List<string>();
+            if (cashDifference != 0m) parts.Add((cashDifference < 0m ? "faltante de efectivo " : "sobrante de efectivo ") + Theme.Money(Math.Abs(cashDifference)));
+            if (yapeDifference != 0m) parts.Add((yapeDifference < 0m ? "faltante de Yape " : "sobrante de Yape ") + Theme.Money(Math.Abs(yapeDifference)));
+            return parts.Count == 0 ? "sin diferencia" : string.Join(", ", parts);
+        }
+
+        // RF-04: medio Efectivo o Yape. Solo los de Efectivo cambian el efectivo esperado; los de Yape, el Yape esperado (RF-05).
+        public static CashMovement AddCashMovement(string type, decimal amount, string comment, string medium = CashMedia.Efectivo)
+        {
+            if (!CashMedia.IsValid(medium)) throw new ArgumentException("Seleccione el medio del movimiento: Efectivo o Yape.");
             lock (Sync)
             {
                 CashMovement movement;
@@ -2344,11 +2392,12 @@ namespace EdenPOS
                         Employee = Clip(employee, 60),
                         Type = Clip(type, 10),
                         Amount = type == "Salida" ? -Math.Abs(Math.Round(amount, 2)) : Math.Abs(Math.Round(amount, 2)),
-                        Comment = Clip(string.IsNullOrWhiteSpace(comment) ? "Sin comentario" : comment.Trim(), 150)
+                        Comment = Clip(string.IsNullOrWhiteSpace(comment) ? "Sin comentario" : comment.Trim(), 150),
+                        Medium = medium
                     };
                     Execute(connection, transaction,
-                        "INSERT INTO movimiento_caja (id_movimiento, id_sesion, id_usuario, empleado, tipo, importe, comentario, created_at) " +
-                        "VALUES (@id, @sesion, @usuario, @empleado, @tipo, @importe, @comentario, @fecha)",
+                        "INSERT INTO movimiento_caja (id_movimiento, id_sesion, id_usuario, empleado, tipo, importe, comentario, created_at, medio) " +
+                        "VALUES (@id, @sesion, @usuario, @empleado, @tipo, @importe, @comentario, @fecha, @medio)",
                         new Dictionary<string, object>
                         {
                             { "@id", movement.Id },
@@ -2358,7 +2407,8 @@ namespace EdenPOS
                             { "@tipo", movement.Type },
                             { "@importe", movement.Amount },
                             { "@comentario", movement.Comment },
-                            { "@fecha", movement.CreatedAt }
+                            { "@fecha", movement.CreatedAt },
+                            { "@medio", movement.Medium }
                         });
                     transaction.Commit();
                 }
@@ -2369,36 +2419,61 @@ namespace EdenPOS
 
         public static decimal CalculateExpectedCash(Shift shift)
         {
-            if (shift == null) return 0m;
-            lock (Sync)
-            using (var connection = SqlConnectionFactory.Open())
-                return CalculateExpectedCash(connection, null, shift);
+            return shift == null ? 0m : GetShiftBalance(shift).ExpectedCash;
         }
 
-        // Efectivo cobrado = suma SQL con la misma definición que Receipt.CashPaid (Mixto: monto_efectivo; Efectivo: total; Yape: 0),
-        // solo recibos Pagado dentro del rango del turno (hora local con hora local). Los movimientos de caja, de MySQL.
-        private static decimal CalculateExpectedCash(MySqlConnection connection, MySqlTransaction transaction, Shift shift)
+        public static decimal CalculateExpectedYape(Shift shift)
         {
-            decimal cashSales;
+            return shift == null ? 0m : GetShiftBalance(shift).ExpectedYape;
+        }
+
+        // RF-05: desglose por medio del turno (pantalla Turno: esperado de efectivo, de Yape y proyección del disponible).
+        public static ShiftBalance GetShiftBalance(Shift shift)
+        {
+            if (shift == null) return new ShiftBalance();
+            lock (Sync)
+            using (var connection = SqlConnectionFactory.Open())
+                return ReadShiftBalance(connection, null, shift);
+        }
+
+        // Ventas por medio = suma SQL con la misma definición que Receipt.CashPaid / YapePaid (Mixto: monto_efectivo / monto_yape; Efectivo o Yape:
+        // total), solo recibos Pagado dentro del rango del turno (hora local con hora local): un reembolso saca la venta de su medio.
+        // Movimientos de caja por medio (RF-04): los que no son Yape (incluidos los anteriores a RF-04) cuentan como efectivo.
+        private static ShiftBalance ReadShiftBalance(MySqlConnection connection, MySqlTransaction transaction, Shift shift)
+        {
+            var balance = new ShiftBalance { OpeningAmount = shift.OpeningAmount };
             using (var command = new MySqlCommand(
-                "SELECT COALESCE(SUM(CASE medio_pago WHEN 'Mixto' THEN monto_efectivo WHEN 'Efectivo' THEN total ELSE 0 END), 0) FROM recibo " +
+                "SELECT COALESCE(SUM(CASE medio_pago WHEN 'Mixto' THEN monto_efectivo WHEN 'Efectivo' THEN total ELSE 0 END), 0), " +
+                "COALESCE(SUM(CASE medio_pago WHEN 'Mixto' THEN monto_yape WHEN 'Yape' THEN total ELSE 0 END), 0) FROM recibo " +
                 "WHERE estado = 'Pagado' AND created_at >= @desde" + (shift.ClosedAt.HasValue ? " AND created_at <= @hasta" : ""), connection, transaction))
             {
                 command.Parameters.AddWithValue("@desde", shift.OpenedAt);
                 if (shift.ClosedAt.HasValue) command.Parameters.AddWithValue("@hasta", shift.ClosedAt.Value);
-                cashSales = Convert.ToDecimal(command.ExecuteScalar());
+                using (var reader = command.ExecuteReader())
+                    if (reader.Read())
+                    {
+                        balance.CashSales = reader.GetDecimal(0);
+                        balance.YapeSales = reader.GetDecimal(1);
+                    }
             }
-            decimal movementTotal;
-            using (var command = new MySqlCommand("SELECT COALESCE(SUM(importe), 0) FROM movimiento_caja WHERE id_sesion = @id", connection, transaction))
+            using (var command = new MySqlCommand(
+                "SELECT COALESCE(SUM(CASE WHEN medio = 'Yape' THEN 0 ELSE importe END), 0), COALESCE(SUM(CASE WHEN medio = 'Yape' THEN importe ELSE 0 END), 0) " +
+                "FROM movimiento_caja WHERE id_sesion = @id", connection, transaction))
             {
                 command.Parameters.AddWithValue("@id", shift.Id);
-                movementTotal = Convert.ToDecimal(command.ExecuteScalar());
+                using (var reader = command.ExecuteReader())
+                    if (reader.Read())
+                    {
+                        balance.CashMovements = reader.GetDecimal(0);
+                        balance.YapeMovements = reader.GetDecimal(1);
+                    }
             }
-            return shift.OpeningAmount + cashSales + movementTotal;
+            return balance;
         }
 
         private const string ShiftColumns =
-            "SELECT id_sesion, numero, empleado, fecha_apertura, fecha_cierre, monto_inicial, monto_cierre, monto_esperado, abierta, observacion_cierre FROM sesion_caja ";
+            "SELECT id_sesion, numero, empleado, fecha_apertura, fecha_cierre, monto_inicial, monto_cierre, monto_esperado, abierta, observacion_cierre, " +
+            "yape_esperado, yape_contado FROM sesion_caja ";
 
         private static List<Shift> ReadShifts(MySqlConnection connection, MySqlTransaction transaction, string clause, Dictionary<string, object> parameters)
         {
@@ -2422,7 +2497,9 @@ namespace EdenPOS
                             ClosingAmount = reader.IsDBNull(6) ? 0m : reader.GetDecimal(6),
                             ExpectedAmount = reader.IsDBNull(7) ? 0m : reader.GetDecimal(7),
                             IsOpen = reader.GetBoolean(8),
-                            ClosingNote = reader.IsDBNull(9) ? null : reader.GetString(9)
+                            ClosingNote = reader.IsDBNull(9) ? null : reader.GetString(9),
+                            ExpectedYape = reader.IsDBNull(10) ? (decimal?)null : reader.GetDecimal(10),
+                            CountedYape = reader.IsDBNull(11) ? (decimal?)null : reader.GetDecimal(11)
                         });
                     }
                 }
@@ -2653,7 +2730,7 @@ namespace EdenPOS
                     {
                         var name = reader.GetName(index);
                         // El bloqueo de cuentas (RF-01) es estado local de seguridad: no va en la copia, así al restaurar no se reimponen bloqueos viejos.
-                        // Las demás columnas nuevas (p. ej. cliente.telefono, producto.cargo_perdida, sesion_caja.observacion_cierre,
+                        // Las demás columnas nuevas (p. ej. cliente.telefono, producto.cargo_perdida, sesion_caja.observacion_cierre, sesion_caja.yape_esperado/yape_contado, movimiento_caja.medio,
                         // configuracion.cargo_perdida_llave) son datos del negocio y SÍ van: por eso una copia nueva no se puede restaurar en una
                         // versión anterior de Edén POS (la restauración rechaza columnas desconocidas). Al revés sí: una copia antigua se restaura
                         // aquí y las columnas que le faltan toman su valor por defecto.

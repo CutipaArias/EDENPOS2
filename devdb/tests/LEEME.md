@@ -40,3 +40,7 @@ sesión, y verifican el rechazo de comandos sin su transacción y la reversión 
 escrituras no confirmadas.
 También verifica que la consulta de DNI conserve el registro local y devuelva
 el control de inmediato cuando el acceso a datos esté ocupado.
+La prueba de caja (RN-02, RF-04, RF-05, RNF-04) parte de una base sin las columnas de
+`007_caja_medios.sql`, comprueba la migración, el rechazo de cobros sin turno (también
+cuando otra caja cierra el turno a la vez), el esperado por medio de pago, la observación
+obligatoria, la auditoría de cada cierre, el reporte de caja y copias nuevas y antiguas.

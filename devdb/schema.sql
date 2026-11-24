@@ -103,6 +103,8 @@ CREATE TABLE sesion_caja (
   monto_esperado DECIMAL(10,2) NULL,
   abierta TINYINT(1) NOT NULL DEFAULT 1,
   observacion_cierre VARCHAR(200) NULL,
+  yape_esperado DECIMAL(10,2) NULL,
+  yape_contado DECIMAL(10,2) NULL,
   CONSTRAINT fk_sesion_caja_usuario FOREIGN KEY (id_usuario) REFERENCES usuario(id_usuario) ON DELETE SET NULL
 );
 
@@ -115,6 +117,7 @@ CREATE TABLE movimiento_caja (
   importe DECIMAL(10,2) NOT NULL,
   comentario VARCHAR(150) NOT NULL,
   created_at DATETIME NOT NULL,
+  medio VARCHAR(10) NOT NULL DEFAULT 'Efectivo',
   FOREIGN KEY (id_sesion) REFERENCES sesion_caja(id_sesion),
   CONSTRAINT fk_movimiento_caja_usuario FOREIGN KEY (id_usuario) REFERENCES usuario(id_usuario) ON DELETE SET NULL
 );

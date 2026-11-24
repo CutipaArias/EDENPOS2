@@ -148,6 +148,9 @@ CREATE TABLE IF NOT EXISTS edenpos.sesion_caja (
 
 -- Observación del cierre de caja con diferencia (RN-09). Por ahora la app NO la replica (trabajo local); la columna queda lista.
 ALTER TABLE edenpos.sesion_caja ADD COLUMN IF NOT EXISTS observacion_cierre varchar(200) NULL;
+-- Cierre por medio de pago (RF-05): Yape esperado y Yape confirmado. Por ahora la app NO los replica (trabajo local); las columnas quedan listas.
+ALTER TABLE edenpos.sesion_caja ADD COLUMN IF NOT EXISTS yape_esperado numeric(10,2) NULL;
+ALTER TABLE edenpos.sesion_caja ADD COLUMN IF NOT EXISTS yape_contado numeric(10,2) NULL;
 
 CREATE TABLE IF NOT EXISTS edenpos.movimiento_caja (
   id_movimiento varchar(32) NOT NULL PRIMARY KEY,
@@ -159,6 +162,9 @@ CREATE TABLE IF NOT EXISTS edenpos.movimiento_caja (
   comentario varchar(150) NOT NULL,
   created_at timestamp without time zone NOT NULL
 );
+
+-- Medio de cada movimiento de caja (RF-04): Efectivo o Yape. Por ahora la app NO lo replica (trabajo local); la columna queda lista.
+ALTER TABLE edenpos.movimiento_caja ADD COLUMN IF NOT EXISTS medio varchar(10) NOT NULL DEFAULT 'Efectivo';
 
 CREATE TABLE IF NOT EXISTS edenpos.recibo (
   id_recibo varchar(32) NOT NULL PRIMARY KEY,

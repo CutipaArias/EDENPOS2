@@ -1068,12 +1068,25 @@ namespace EdenPOS
         private void ChargeButton_Click(object sender, EventArgs e)
         {
             if (cart.Count == 0) return;
-            if (!ValidateCustomer()) return;
-            if (AppData.OpenShift == null)
+            // RN-02: sin caja abierta no se cobra. Se avisa antes de abrir la devolución de llaves y el cobro; el ticket queda en pantalla.
+            // AppData.AddReceipt lo vuelve a comprobar dentro de la transacción (otra caja pudo cerrar el turno mientras se cobraba).
+            Shift openShift;
+            try
             {
-                Theme.Message(FindForm(), Tone.Warning, "Debe abrir un turno antes de cobrar una venta.", "Turno requerido");
+                openShift = AppData.OpenShift;
+            }
+            catch (MySqlConnector.MySqlException ex)
+            {
+                AppData.LogError(ex, "Cobrar: comprobar turno (base de datos)");
+                Theme.Message(FindForm(), Tone.Danger, AppData.DescribeDatabaseError(ex), "No se pudo cobrar");
                 return;
             }
+            if (openShift == null)
+            {
+                Theme.Message(FindForm(), Tone.Warning, AppData.NoOpenShiftMessage + " Vaya a Turno (F4) y abra la caja con el fondo inicial; el ticket se conserva.", "Turno requerido");
+                return;
+            }
+            if (!ValidateCustomer()) return;
             var saleTotal = cart.Sum(x => x.LineTotal);
             if (saleTotal == 0m && MessageBox.Show("Este ticket tiene total S/ 0.00. ¿Registrar como cortesía?", "Venta sin costo", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
             // RF-19: una visita con llaves confirma la devolución de llaves e implementos; lo no devuelto se cobra (RN-07).

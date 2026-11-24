@@ -410,8 +410,12 @@ namespace EdenPOS
             ReportUi.Column(shiftGrid, "Esperado", true);
             ReportUi.Column(shiftGrid, "Contado", true);
             ReportUi.Column(shiftGrid, "Diferencia", true);
+            // RF-05: cierre por medio de pago (vacío en turnos cerrados antes de RF-05).
+            ReportUi.Column(shiftGrid, "Yape esperado", true);
+            ReportUi.Column(shiftGrid, "Yape contado", true);
+            ReportUi.Column(shiftGrid, "Diferencia Yape", true);
             ReportUi.Column(shiftGrid, "Observación", false, 1.6f);
-            layout.Controls.Add(ReportUi.Block("Turnos de caja", "Turnos cuya apertura cae en el rango. Un faltante se resalta en rojo y un sobrante en ámbar.", shiftGrid, shiftEmpty), 0, 1);
+            layout.Controls.Add(ReportUi.Block("Turnos de caja", "Turnos cuya apertura cae en el rango. Esperado, contado y diferencia son de efectivo; las columnas Yape comparan con lo confirmado en la app Yape. Un faltante se resalta en rojo y un sobrante en ámbar.", shiftGrid, shiftEmpty), 0, 1);
             return layout;
         }
 
@@ -419,6 +423,13 @@ namespace EdenPOS
         private static Color DifferenceColor(decimal difference)
         {
             return difference < 0m ? Theme.Danger : Theme.Warning;
+        }
+
+        private static void HighlightDifference(DataGridViewCell cell, decimal? difference)
+        {
+            if (!difference.HasValue || difference.Value == 0m) return;
+            cell.Style.ForeColor = DifferenceColor(difference.Value);
+            cell.Style.Font = ReportUi.BoldBodyFont;
         }
 
         private void BindShifts()
@@ -435,22 +446,23 @@ namespace EdenPOS
                     row.ExpectedAmount.HasValue ? Theme.Money(row.ExpectedAmount.Value) : "—",
                     row.CountedAmount.HasValue ? Theme.Money(row.CountedAmount.Value) : "—",
                     row.Difference.HasValue ? Theme.Money(row.Difference.Value) : "—",
+                    row.ExpectedYape.HasValue ? Theme.Money(row.ExpectedYape.Value) : "—",
+                    row.CountedYape.HasValue ? Theme.Money(row.CountedYape.Value) : "—",
+                    row.YapeDifference.HasValue ? Theme.Money(row.YapeDifference.Value) : "—",
                     row.ClosingNote ?? "");
                 if (!row.ClosedAt.HasValue) shiftGrid.Rows[index].Cells[3].Style.ForeColor = Theme.Muted;
-                if (row.Difference.HasValue && row.Difference.Value != 0m)
-                {
-                    var style = shiftGrid.Rows[index].Cells[7].Style;
-                    style.ForeColor = DifferenceColor(row.Difference.Value);
-                    style.Font = ReportUi.BoldBodyFont;
-                }
+                HighlightDifference(shiftGrid.Rows[index].Cells[7], row.Difference);
+                HighlightDifference(shiftGrid.Rows[index].Cells[10], row.YapeDifference);
             }
             if (report.Rows.Count > 0)
             {
-                var index = shiftGrid.Rows.Add("", "Total", "", "", Theme.Money(report.OpeningTotal), Theme.Money(report.ExpectedTotal), Theme.Money(report.CountedTotal), Theme.Money(report.DifferenceTotal), "");
+                var index = shiftGrid.Rows.Add("", "Total", "", "", Theme.Money(report.OpeningTotal), Theme.Money(report.ExpectedTotal), Theme.Money(report.CountedTotal), Theme.Money(report.DifferenceTotal),
+                    Theme.Money(report.YapeExpectedTotal), Theme.Money(report.YapeCountedTotal), Theme.Money(report.YapeDifferenceTotal), "");
                 var totalRow = shiftGrid.Rows[index];
                 totalRow.DefaultCellStyle.Font = ReportUi.BoldBodyFont;
                 totalRow.DefaultCellStyle.BackColor = Theme.SurfaceSunken;
                 if (report.DifferenceTotal != 0m) totalRow.Cells[7].Style.ForeColor = DifferenceColor(report.DifferenceTotal);
+                if (report.YapeDifferenceTotal != 0m) totalRow.Cells[10].Style.ForeColor = DifferenceColor(report.YapeDifferenceTotal);
             }
             ReportUi.Show(shiftGrid, shiftEmpty, report.Rows.Count > 0);
             shiftGrid.ClearSelection();
@@ -459,7 +471,8 @@ namespace EdenPOS
             var open = report.Rows.Count - report.ClosedCount;
             shiftCountDetail.Text = report.ClosedCount + (report.ClosedCount == 1 ? " cerrado, " : " cerrados, ") + open + (open == 1 ? " abierto" : " abiertos");
             shiftExpectedValue.Text = Theme.Money(report.ExpectedTotal);
-            shiftExpectedDetail.Text = "Contado: " + Theme.Money(report.CountedTotal);
+            shiftExpectedDetail.Text = "Contado: " + Theme.Money(report.CountedTotal) + "  ·  Yape esperado: " + Theme.Money(report.YapeExpectedTotal) +
+                (report.YapeDifferenceTotal != 0m ? " (diferencia " + Theme.Money(report.YapeDifferenceTotal) + ")" : "");
             shiftDiffValue.Text = Theme.Money(report.DifferenceTotal);
             shiftDiffValue.ForeColor = report.DifferenceTotal != 0m ? DifferenceColor(report.DifferenceTotal) : Theme.Ink;
             shiftDiffPill.Text = report.DifferenceTotal == 0m ? "Sin diferencia neta" : report.DifferenceTotal < 0m ? "Faltante en caja" : "Sobrante en caja";
@@ -630,10 +643,12 @@ namespace EdenPOS
             var rows = new List<object[]>();
             if (section == "caja")
             {
-                rows.Add(new object[] { "Número", "Empleado", "Apertura", "Cierre", "Monto inicial", "Esperado", "Contado", "Diferencia", "Observación" });
+                rows.Add(new object[] { "Número", "Empleado", "Apertura", "Cierre", "Monto inicial", "Esperado", "Contado", "Diferencia", "Yape esperado", "Yape contado", "Diferencia Yape", "Observación" });
                 foreach (var r in shiftData.Rows)
-                    rows.Add(new object[] { r.Number, r.Employee, r.OpenedAt, r.ClosedAt.HasValue ? (object)r.ClosedAt.Value : "Abierto", r.OpeningAmount, r.ExpectedAmount, r.CountedAmount, r.Difference, r.ClosingNote ?? "" });
-                rows.Add(new object[] { "", "Total (esperado, contado y diferencia: solo turnos cerrados)", "", "", shiftData.OpeningTotal, shiftData.ExpectedTotal, shiftData.CountedTotal, shiftData.DifferenceTotal, "" });
+                    rows.Add(new object[] { r.Number, r.Employee, r.OpenedAt, r.ClosedAt.HasValue ? (object)r.ClosedAt.Value : "Abierto", r.OpeningAmount, r.ExpectedAmount, r.CountedAmount, r.Difference,
+                        r.ExpectedYape, r.CountedYape, r.YapeDifference, r.ClosingNote ?? "" });
+                rows.Add(new object[] { "", "Total (esperado, contado y diferencia: solo turnos cerrados)", "", "", shiftData.OpeningTotal, shiftData.ExpectedTotal, shiftData.CountedTotal, shiftData.DifferenceTotal,
+                    shiftData.YapeExpectedTotal, shiftData.YapeCountedTotal, shiftData.YapeDifferenceTotal, "" });
             }
             else if (section == "ventas")
             {
