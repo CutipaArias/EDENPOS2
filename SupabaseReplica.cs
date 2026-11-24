@@ -43,6 +43,7 @@ namespace EdenPOS
         public string RemoteLastUpload { get; set; }  // _replica_info.ultima_subida
         public bool BlockedByMassDelete { get; set; } // la última pasada no se aplicó porque borraría demasiadas filas en Supabase
         public int PendingDeletes { get; set; }       // filas que esa pasada habría borrado (0 si no está bloqueada por borrado masivo)
+        public string[] MissingRemoteColumns { get; set; } // "tabla.columna" que Supabase aún no tiene (script 01 anterior): no se replican
         public bool OtherPcUploads { get { return !string.IsNullOrEmpty(RemoteLastPc) && !string.Equals(RemoteLastPc, ThisPc, StringComparison.OrdinalIgnoreCase); } }
     }
 
@@ -68,6 +69,7 @@ namespace EdenPOS
         public string LastPc { get; set; }            // _replica_info.ultima_pc
         public bool CanRestore { get; set; }
         public string Problem { get; set; }           // motivo en español cuando CanRestore es false
+        public string[] MissingColumns { get; set; }  // "tabla.columna" que Supabase no tiene: al restaurar toman su valor por defecto
     }
 
     internal class ReplicaBlockedException : Exception
@@ -165,6 +167,7 @@ namespace EdenPOS
         private static string replicaRemoteUpload = "";
         private static bool replicaBlockedMass;
         private static int replicaPendingDeletes;
+        private static string[] replicaMissingColumns = new string[0];   // columnas opcionales que faltan en Supabase (última conexión)
         private static string[] replicaSecrets = new string[0];   // cadena de conexión y contraseña vistas, para enmascararlas
 
         // ===================== API pública =====================
@@ -264,7 +267,8 @@ namespace EdenPOS
                     RemoteLastPc = replicaRemotePc,
                     RemoteLastUpload = replicaRemoteUpload,
                     BlockedByMassDelete = replicaBlockedMass,
-                    PendingDeletes = replicaPendingDeletes
+                    PendingDeletes = replicaPendingDeletes,
+                    MissingRemoteColumns = replicaMissingColumns
                 };
             }
         }
@@ -297,11 +301,14 @@ namespace EdenPOS
                 using (var target = ReplicaCreateTarget(connection, ca))
                 {
                     target.EnsureReady();
+                    tables = ReplicaTablesFor(target);   // solo las columnas que Supabase admite (las opcionales que falten quedan en el aviso)
                     foreach (var info in tables) counts[info.Table.Name] = target.ReadAll(info.Table).Count();
                     lastUpload = (target.GetInfo("ultima_subida") ?? "").Trim();
                     lastPc = (target.GetInfo("ultima_pc") ?? "").Trim();
                 }
-                return ReplicaBuildPreview(counts, lastUpload, lastPc);
+                var preview = ReplicaBuildPreview(counts, lastUpload, lastPc);
+                lock (replicaLock) preview.MissingColumns = replicaMissingColumns;
+                return preview;
             }
             catch (Exception ex)
             {
@@ -311,7 +318,7 @@ namespace EdenPOS
 
         private static SupabaseRestorePreview ReplicaBuildPreview(Dictionary<string, int> counts, string lastUpload, string lastPc)
         {
-            var preview = new SupabaseRestorePreview { RowsPerTable = counts, LastPc = lastPc ?? "", CanRestore = true, Problem = "" };
+            var preview = new SupabaseRestorePreview { RowsPerTable = counts, LastPc = lastPc ?? "", CanRestore = true, Problem = "", MissingColumns = new string[0] };
             DateTime parsed;
             if (!string.IsNullOrEmpty(lastUpload) &&
                 DateTime.TryParseExact(lastUpload, "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture, DateTimeStyles.None, out parsed))
@@ -418,6 +425,7 @@ namespace EdenPOS
                 using (var target = ReplicaCreateTarget(connection, ca))
                 {
                     target.EnsureReady();
+                    tables = ReplicaTablesFor(target);   // solo las columnas que Supabase admite (las opcionales que falten quedan en el aviso)
                     remoteBase = (target.GetInfo("base_id") ?? "").Trim();
                     foreach (var info in tables)
                     {
@@ -638,6 +646,10 @@ namespace EdenPOS
                     var remoteBase = (target.GetInfo("base_id") ?? "").Trim();
                     var pc = (target.GetInfo("ultima_pc") ?? "").Trim();
                     var when = (target.GetInfo("ultima_subida") ?? "").Trim();
+                    // También actualiza el aviso de columnas que faltan (si la base local no responde, se deja como estaba).
+                    string[] missing = null;
+                    try { ReplicaTablesFor(target); lock (replicaLock) missing = replicaMissingColumns; }
+                    catch (Exception ex) { ReplicaLog(ex, "Revisar las columnas de Supabase al probar la conexión"); }
                     var text = new StringBuilder("Conexión correcta con Supabase. ");
                     if (remoteBase.Length == 0) text.Append("La réplica está vacía y lista para usarse.");
                     else
@@ -646,6 +658,7 @@ namespace EdenPOS
                         text.Append(local.Length > 0 && local == remoteBase ? "Contiene la réplica de esta base de datos." : "Contiene datos de otra base de datos.");
                         if (pc.Length > 0) text.Append(" Última subida: ").Append(when.Length > 0 ? when : "(sin fecha)").Append(" desde ").Append(pc).Append('.');
                     }
+                    if (missing != null && missing.Length > 0) text.Append(" ").Append(DescribeSupabaseMissingColumns(missing));
                     return text.ToString();
                 }
             }
@@ -767,6 +780,11 @@ namespace EdenPOS
                 replicaStatusState = state;
                 replicaStatusMessage = message;
             }
+            ReplicaRaiseStatusChanged();
+        }
+
+        private static void ReplicaRaiseStatusChanged()
+        {
             var handler = SupabaseReplicaStatusChanged;
             if (handler == null) return;
             try { handler(null, EventArgs.Empty); } catch (Exception ex) { ReplicaLog(ex, "Evento de estado de la réplica de Supabase"); }
@@ -874,6 +892,7 @@ namespace EdenPOS
             using (var target = ReplicaCreateTarget(connection, ca))
             {
                 target.EnsureReady();
+                tables = ReplicaTablesFor(target);   // solo las columnas que Supabase admite (las opcionales que falten quedan en el aviso)
                 var remoteBase = (target.GetInfo("base_id") ?? "").Trim();
                 var pc = (target.GetInfo("ultima_pc") ?? "").Trim();
                 var when = (target.GetInfo("ultima_subida") ?? "").Trim();
@@ -1200,51 +1219,143 @@ namespace EdenPOS
                     List<string> pk;
                     if (!columns.TryGetValue(name, out cols)) throw new InvalidOperationException("Falta la tabla " + name + " en la base de datos.");
                     if (!keys.TryGetValue(name, out pk) || pk.Count == 0) throw new InvalidOperationException("La tabla " + name + " no tiene clave primaria.");
-                    // El token de DNI (cifrado para esta PC) no se replica, igual que las copias de seguridad.
-                    // El estado de bloqueo de las cuentas (RF-01) es local de cada instalación y tampoco se replica: así la réplica funciona igual aunque
-                    // el esquema de Supabase aún no tenga esas columnas.
-                    var kept = cols.Where(c => !(name == "configuracion" && c.Key == "dni_api_token_protected") &&
-                                               !(name == "usuario" && (c.Key == "intentos_fallidos" || c.Key == "bloqueado_en")) &&
-                                               // RN-09: por ahora la observación de cierre se queda solo en la base local (Supabase aún puede no tener la columna).
-                                               !(name == "sesion_caja" && c.Key == "observacion_cierre") &&
-                                               // RF-04 / RF-05: medio de los movimientos y Yape esperado/confirmado del cierre, por ahora solo en la base local
-                                               // (Supabase aún puede no tener las columnas; devdb/supabase/01_esquema_replica.sql ya las agrega).
-                                               !(name == "sesion_caja" && (c.Key == "yape_esperado" || c.Key == "yape_contado")) &&
-                                               !(name == "movimiento_caja" && c.Key == "medio") &&
-                                               // RF-06 / RNF-09: por ahora el teléfono y el consentimiento del cliente se quedan solo en la base local (Supabase aún puede no tener las columnas).
-                                               !(name == "cliente" && (c.Key == "telefono" || c.Key == "consentimiento_datos" || c.Key == "consentimiento_fecha")) &&
-                                               !(name == "configuracion" && c.Key == "simular_rechazo_comprobantes") &&
-                                               // RF-19 / RN-06 / RN-07: cargos por pérdida y llaves fuera de uso, por ahora solo en la base local
-                                               // (Supabase aún puede no tener las columnas; devdb/supabase/01_esquema_replica.sql ya las agrega).
-                                               !(name == "configuracion" && (c.Key == "cargo_perdida_llave" || c.Key == "llaves_fuera_uso")) &&
-                                               !(name == "producto" && c.Key == "cargo_perdida") &&
-                                               // RF-14 / RNF-09 / RF-21 (devdb/migraciones/009): tipo de artículo, fecha de retiro del consentimiento y
-                                               // último mensaje del emisor simulado, por ahora solo en la base local (01_esquema_replica.sql ya las agrega).
-                                               // Al restaurar desde Supabase, RestoreTables vuelve a deducir el tipo, pero solo por la categoría ALQUILERES: cargo_perdida tampoco se replica.
-                                               !(name == "producto" && c.Key == "tipo") &&
-                                               !(name == "cliente" && c.Key == "consentimiento_revocado") &&
-                                               !(name == "comprobante" && c.Key == "mensaje_respuesta") &&
-                                               // RN-01 / RF-17: saldo pendiente, su cobro y hora de ingreso, por ahora solo en la base local
-                                               // (Supabase aún puede no tener las columnas; devdb/supabase/01_esquema_replica.sql ya las agrega).
-                                               !(name == "recibo" && AppData.ReceiptBalanceColumns.Any(x => x.Key == c.Key))).ToList();
-                    var names = kept.Select(c => c.Key).ToArray();
-                    var info = new ReplicaTableInfo
+                    // Aquí solo se quitan las columnas que NUNCA se replican (ReplicaIsLocalOnlyColumn). Las columnas nuevas de las migraciones
+                    // se recortan después, en cada conexión, según lo que tenga Supabase (ReplicaTablesFor).
+                    var names = cols.Select(c => c.Key).Where(c => !ReplicaIsLocalOnlyColumn(name, c)).ToArray();
+                    var kinds = pk.Select(k =>
                     {
-                        Table = new ReplicaTable { Name = name, Columns = names, KeyColumns = pk.ToArray() },
-                        KeyIndexes = pk.Select(k => Array.FindIndex(names, n => string.Equals(n, k, StringComparison.OrdinalIgnoreCase))).ToArray(),
-                        KeyKinds = pk.Select(k =>
-                        {
-                            var type = cols.First(c => string.Equals(c.Key, k, StringComparison.OrdinalIgnoreCase)).Value;
-                            return type == "bigint" ? 2 : (type == "int" || type == "smallint" || type == "mediumint" || type == "tinyint") ? 1 : 0;
-                        }).ToArray()
-                    };
-                    if (info.KeyIndexes.Any(i => i < 0)) throw new InvalidOperationException("La clave de " + name + " no está entre sus columnas.");
-                    info.SelectSql = "SELECT " + string.Join(", ", names.Select(n => "`" + n + "`")) + " FROM `" + name + "` ORDER BY " +
-                                     string.Join(", ", pk.Select(k => "`" + k + "`"));
-                    result.Add(info);
+                        var type = cols.First(c => string.Equals(c.Key, k, StringComparison.OrdinalIgnoreCase)).Value;
+                        return type == "bigint" ? 2 : (type == "int" || type == "smallint" || type == "mediumint" || type == "tinyint") ? 1 : 0;
+                    }).ToArray();
+                    result.Add(ReplicaMakeInfo(name, names, pk.ToArray(), kinds));
                 }
                 return result;
             }
+        }
+
+        private static ReplicaTableInfo ReplicaMakeInfo(string name, string[] names, string[] pk, int[] keyKinds)
+        {
+            var info = new ReplicaTableInfo
+            {
+                Table = new ReplicaTable { Name = name, Columns = names, KeyColumns = pk },
+                KeyIndexes = pk.Select(k => Array.FindIndex(names, n => string.Equals(n, k, StringComparison.OrdinalIgnoreCase))).ToArray(),
+                KeyKinds = keyKinds
+            };
+            if (info.KeyIndexes.Any(i => i < 0)) throw new InvalidOperationException("La clave de " + name + " no está entre sus columnas.");
+            info.SelectSql = "SELECT " + string.Join(", ", names.Select(n => "`" + n + "`")) + " FROM `" + name + "` ORDER BY " +
+                             string.Join(", ", pk.Select(k => "`" + k + "`"));
+            return info;
+        }
+
+        // ===================== Columnas que se replican =====================
+        //
+        // Hay dos motivos distintos para que una columna local no llegue a Supabase:
+        //
+        // 1) SEGURIDAD o estado LOCAL de cada PC (ReplicaIsLocalOnlyColumn): no se replican NUNCA, aunque Supabase tenga la columna.
+        //    - configuracion.dni_api_token_protected: token de la API de DNI cifrado con DPAPI para esta PC (es un secreto y en otra PC no
+        //      se podría descifrar). Las copias de seguridad tampoco lo llevan.
+        //    - usuario.intentos_fallidos y usuario.bloqueado_en (RF-01): bloqueo por PIN fallidos, estado de seguridad local; al restaurar
+        //      no deben reimponerse bloqueos viejos. Las copias de seguridad tampoco lo llevan.
+        //    - La tabla impresora_pc (impresora de cada equipo) no está en BackupTables, así que no se replica.
+        //
+        // 2) COMPATIBILIDAD (ReplicaOptionalColumns): columnas agregadas por devdb/migraciones (002-009). Son datos del negocio y SÍ se
+        //    replican, pero solo si el esquema de Supabase ya las tiene (01_esquema_replica.sql actualizado). Si el proyecto aún tiene el
+        //    script anterior, la réplica sigue funcionando sin ellas y Configuración → Réplica en Supabase pide volver a ejecutar el script.
+        //    Al restaurar, las que falten en Supabase toman su valor por defecto (y producto.tipo se deduce con MarkLegacyImplements).
+        internal static readonly Dictionary<string, string[]> ReplicaOptionalColumns = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+        {
+            // RF-06 / RN-14 / RNF-09: teléfono, consentimiento de datos y su retiro.
+            { "cliente", new[] { "telefono", "consentimiento_datos", "consentimiento_fecha", "consentimiento_revocado" } },
+            // RF-21 (simular rechazo, vale para todas las cajas) y RF-19 / RN-06 / RN-07 (cargo por pérdida de llave, llaves fuera de uso).
+            { "configuracion", new[] { "simular_rechazo_comprobantes", "cargo_perdida_llave", "llaves_fuera_uso" } },
+            // RF-19 / RN-07 (cargo por pérdida del implemento) y RF-14 (tipo de artículo).
+            { "producto", new[] { "cargo_perdida", "tipo" } },
+            // RN-09 (observación del cierre) y RF-05 (Yape esperado y confirmado).
+            { "sesion_caja", new[] { "observacion_cierre", "yape_esperado", "yape_contado" } },
+            // RF-04: medio del movimiento de caja.
+            { "movimiento_caja", new[] { "medio" } },
+            // RF-21: último mensaje del emisor simulado.
+            { "comprobante", new[] { "mensaje_respuesta" } },
+            // RN-01 / RF-17: saldo pendiente, su cobro y hora de ingreso.
+            { "recibo", ReceiptBalanceColumns.Select(c => c.Key).ToArray() }
+        };
+
+        internal static bool ReplicaIsLocalOnlyColumn(string table, string column)
+        {
+            return (string.Equals(table, "configuracion", StringComparison.OrdinalIgnoreCase) && string.Equals(column, "dni_api_token_protected", StringComparison.OrdinalIgnoreCase)) ||
+                   (string.Equals(table, "usuario", StringComparison.OrdinalIgnoreCase) &&
+                    (string.Equals(column, "intentos_fallidos", StringComparison.OrdinalIgnoreCase) || string.Equals(column, "bloqueado_en", StringComparison.OrdinalIgnoreCase)));
+        }
+
+        internal static bool ReplicaIsOptionalColumn(string table, string column)
+        {
+            string[] optional;
+            return table != null && ReplicaOptionalColumns.TryGetValue(table, out optional) && optional.Contains(column, StringComparer.OrdinalIgnoreCase);
+        }
+
+        // Función pura: columnas locales de una tabla + columnas que tiene Supabase (null = la tabla no está) -> columnas a replicar, en el
+        // orden local. Las de seguridad/locales nunca salen; las opcionales solo si Supabase las tiene (las que faltan van a missingOptional
+        // como "tabla.columna"). Las demás (esquema base) salen siempre: si faltaran en Supabase, SupabaseTarget lo informa como error del script.
+        public static string[] ReplicaSelectColumns(string table, IEnumerable<string> localColumns, ICollection<string> remoteColumns, ICollection<string> missingOptional)
+        {
+            var remote = remoteColumns == null ? new HashSet<string>(StringComparer.OrdinalIgnoreCase) : new HashSet<string>(remoteColumns, StringComparer.OrdinalIgnoreCase);
+            var result = new List<string>();
+            foreach (var column in localColumns ?? Enumerable.Empty<string>())
+            {
+                if (ReplicaIsLocalOnlyColumn(table, column)) continue;
+                if (ReplicaIsOptionalColumn(table, column) && !remote.Contains(column))
+                {
+                    if (missingOptional != null) missingOptional.Add(table + "." + column);
+                    continue;
+                }
+                result.Add(column);
+            }
+            return result.ToArray();
+        }
+
+        // Las tablas recortadas a lo que admite el destino (llamar después de target.EnsureReady()). Registra las columnas que faltan para el aviso.
+        private static List<ReplicaTableInfo> ReplicaTablesFor(IReplicaTarget target)
+        {
+            var missing = new List<string>();
+            var result = new List<ReplicaTableInfo>();
+            foreach (var info in ReplicaGetTables())
+            {
+                var names = ReplicaSelectColumns(info.Table.Name, info.Table.Columns, target.GetColumnNames(info.Table.Name), missing);
+                result.Add(names.Length == info.Table.Columns.Length ? info : ReplicaMakeInfo(info.Table.Name, names, info.Table.KeyColumns, info.KeyKinds));
+            }
+            ReplicaSetMissingColumns(missing.ToArray());
+            return result;
+        }
+
+        // Aviso para Configuración → Réplica en Supabase cuando el esquema remoto es anterior ("" si no falta nada).
+        public static string DescribeSupabaseMissingColumns(string[] missing)
+        {
+            if (missing == null || missing.Length == 0) return "";
+            var groups = new[]
+            {
+                new KeyValuePair<string, string>("recibo", "saldos pendientes y su cobro"),
+                new KeyValuePair<string, string>("movimiento_caja", "medios de pago de los movimientos de caja"),
+                new KeyValuePair<string, string>("sesion_caja", "Yape esperado y confirmado de los cierres de caja"),
+                new KeyValuePair<string, string>("producto", "tipo y cargo por pérdida de los artículos"),
+                new KeyValuePair<string, string>("cliente", "teléfono y consentimiento de los clientes"),
+                new KeyValuePair<string, string>("configuracion", "cargos por pérdida de llave y llaves fuera de uso"),
+                new KeyValuePair<string, string>("comprobante", "respuesta de los comprobantes")
+            };
+            var parts = groups.Where(g => missing.Any(m => m.StartsWith(g.Key + ".", StringComparison.OrdinalIgnoreCase))).Select(g => g.Value).ToList();
+            return "Su proyecto de Supabase tiene una versión anterior del esquema de la réplica, así que no se están copiando " + missing.Length +
+                   " datos recientes (" + string.Join(", ", parts) + "). Ejecute de nuevo devdb\\supabase\\01_esquema_replica.sql en el SQL Editor de " +
+                   "Supabase (no borra datos) para que se copien también y luego pulse Subir ahora. Mientras tanto, la réplica sigue copiando el resto.";
+        }
+
+        private static void ReplicaSetMissingColumns(string[] missing)
+        {
+            bool changed;
+            lock (replicaLock)
+            {
+                changed = !replicaMissingColumns.SequenceEqual(missing);
+                replicaMissingColumns = missing;
+            }
+            if (changed) ReplicaRaiseStatusChanged();
         }
 
         private static string ReplicaText(object raw)

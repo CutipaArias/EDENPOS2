@@ -57,7 +57,7 @@ namespace EdenPOS
         private EdenField sbPasswordField, sbCaField;
         private NumericUpDown sbPort;
         private CheckBox sbEnabled;
-        private Banner sbConnBanner, sbRunBanner, sbOtherPc, sbRestoreBanner, sbBlockBanner;
+        private Banner sbConnBanner, sbRunBanner, sbOtherPc, sbRestoreBanner, sbBlockBanner, sbSchemaBanner;
         private Button sbTest, sbSave, sbNow, sbRestore, sbForce;
         private int sbPendingDeletes;
         private Pill sbPill;
@@ -596,6 +596,9 @@ namespace EdenPOS
             sbOtherPc = Theme.Banner("", Tone.Warning);
             sbOtherPc.Visible = false;
             sbStatusCard.Add(sbOtherPc, Theme.Space.Lg);
+            sbSchemaBanner = Theme.Banner("", Tone.Warning);
+            sbSchemaBanner.Visible = false;
+            sbStatusCard.Add(sbSchemaBanner, Theme.Space.Lg);
             sbRunBanner = Theme.Banner("", Tone.Info);
             sbRunBanner.Visible = false;
             sbStatusCard.Add(sbRunBanner, Theme.Space.Lg);
@@ -1157,6 +1160,8 @@ namespace EdenPOS
             if (status.OtherPcUploads)
                 SetBanner(sbOtherPc, Tone.Warning, "Otra PC (" + status.RemoteLastPc + ") también sube datos a esta réplica. Active la réplica en una sola PC para que no se pisen.");
             else SetBanner(sbOtherPc, Tone.Warning, null);
+            // Esquema de Supabase anterior: la réplica funciona, pero sin saldos, medios de pago, etc. hasta volver a ejecutar el script.
+            SetBanner(sbSchemaBanner, Tone.Warning, AppData.DescribeSupabaseMissingColumns(status.MissingRemoteColumns));
             sbNow.Enabled = status.Enabled && !status.Running && !sbRestoring;
             sbPendingDeletes = status.PendingDeletes;
             SetBanner(sbBlockBanner, Tone.Warning, status.BlockedByMassDelete ? status.Message : null);
@@ -1359,6 +1364,8 @@ namespace EdenPOS
             var total = 0;
             foreach (var pair in rows) total += pair.Value;
             lines.Add("Total de filas: " + total + ".");
+            if (preview.MissingColumns != null && preview.MissingColumns.Length > 0)
+                lines.Add("Atención: Supabase tiene un esquema anterior y no guarda " + preview.MissingColumns.Length + " datos recientes (saldos pendientes, medios de pago, tipo de artículo, etc.). Esos datos se restaurarán con su valor por defecto.");
             return string.Join("\n", lines);
         }
 

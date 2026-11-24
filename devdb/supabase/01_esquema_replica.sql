@@ -14,6 +14,13 @@
 --  * CHAR(n) de MariaDB -> varchar(n) para evitar relleno con espacios.
 --  * RLS activo: solo el rol edenpos_replica puede leer/escribir. anon,
 --    authenticated y public no tienen ningun acceso (la API publica no expone nada).
+--  * Las columnas agregadas despues de la primera version van con
+--    ALTER TABLE ... ADD COLUMN IF NOT EXISTS tras cada CREATE TABLE: si su
+--    proyecto ya tenia el esquema, vuelva a ejecutar este script para
+--    agregarlas (no borra datos). EdenPOS replica esas columnas solo cuando
+--    existen aqui; mientras falten, Configuracion > Replica en Supabase lo avisa.
+--  * Nunca se replican (aunque existan aqui): configuracion.dni_api_token_protected
+--    (secreto de cada PC) ni usuario.intentos_fallidos / bloqueado_en (estado local).
 -- =====================================================================
 
 -- 1. Esquema ----------------------------------------------------------
@@ -57,7 +64,7 @@ CREATE TABLE IF NOT EXISTS edenpos.usuario (
   updated_at timestamp without time zone NOT NULL
 );
 
--- Bloqueo de cuentas por intentos fallidos (RF-01). Idempotente (PostgreSQL admite ADD COLUMN IF NOT EXISTS). La app NO replica estas dos
+-- Bloqueo de cuentas por intentos fallidos (RF-01). Idempotente (PostgreSQL admite ADD COLUMN IF NOT EXISTS). La app NUNCA replica estas dos
 -- columnas (el bloqueo es local de cada instalación); existen aquí solo para que el esquema coincida con el de MariaDB/MySQL.
 ALTER TABLE edenpos.usuario ADD COLUMN IF NOT EXISTS intentos_fallidos integer NOT NULL DEFAULT 0;
 ALTER TABLE edenpos.usuario ADD COLUMN IF NOT EXISTS bloqueado_en timestamp without time zone NULL;
@@ -70,11 +77,11 @@ CREATE TABLE IF NOT EXISTS edenpos.cliente (
   updated_at timestamp without time zone NOT NULL
 );
 
--- Teléfono y consentimiento de datos del cliente (RF-06, RN-14, RNF-09). Por ahora la app NO los replica (trabajo local); las columnas quedan listas.
+-- Teléfono y consentimiento de datos del cliente (RF-06, RN-14, RNF-09). La app las replica cuando existen aquí.
 ALTER TABLE edenpos.cliente ADD COLUMN IF NOT EXISTS telefono varchar(15) NULL;
 ALTER TABLE edenpos.cliente ADD COLUMN IF NOT EXISTS consentimiento_datos boolean NOT NULL DEFAULT false;
 ALTER TABLE edenpos.cliente ADD COLUMN IF NOT EXISTS consentimiento_fecha timestamp without time zone NULL;
--- Fecha en que el cliente retiró su consentimiento (RNF-09 / RN-14). Por ahora la app NO la replica (trabajo local); la columna queda lista.
+-- Fecha en que el cliente retiró su consentimiento (RNF-09 / RN-14). La app la replica cuando existe aquí.
 ALTER TABLE edenpos.cliente ADD COLUMN IF NOT EXISTS consentimiento_revocado timestamp without time zone NULL;
 
 CREATE TABLE IF NOT EXISTS edenpos.producto (
@@ -91,9 +98,9 @@ CREATE TABLE IF NOT EXISTS edenpos.producto (
   stock_minimo integer NOT NULL DEFAULT 0
 );
 
--- Cargo por pérdida del implemento (RF-19 / RN-07). Por ahora la app NO lo replica (trabajo local); la columna queda lista.
+-- Cargo por pérdida del implemento (RF-19 / RN-07). La app la replica cuando existe aquí.
 ALTER TABLE edenpos.producto ADD COLUMN IF NOT EXISTS cargo_perdida numeric(10,2) NOT NULL DEFAULT 0;
--- Tipo de artículo: Producto o Implemento (RF-14). Por ahora la app NO lo replica (trabajo local); la columna queda lista.
+-- Tipo de artículo: Producto o Implemento (RF-14). La app la replica cuando existe aquí.
 ALTER TABLE edenpos.producto ADD COLUMN IF NOT EXISTS tipo varchar(12) NOT NULL DEFAULT 'Producto';
 
 CREATE TABLE IF NOT EXISTS edenpos.producto_variante (
@@ -150,9 +157,9 @@ CREATE TABLE IF NOT EXISTS edenpos.sesion_caja (
   abierta boolean NOT NULL DEFAULT true
 );
 
--- Observación del cierre de caja con diferencia (RN-09). Por ahora la app NO la replica (trabajo local); la columna queda lista.
+-- Observación del cierre de caja con diferencia (RN-09). La app la replica cuando existe aquí.
 ALTER TABLE edenpos.sesion_caja ADD COLUMN IF NOT EXISTS observacion_cierre varchar(200) NULL;
--- Cierre por medio de pago (RF-05): Yape esperado y Yape confirmado. Por ahora la app NO los replica (trabajo local); las columnas quedan listas.
+-- Cierre por medio de pago (RF-05): Yape esperado y Yape confirmado. La app las replica cuando existen aquí.
 ALTER TABLE edenpos.sesion_caja ADD COLUMN IF NOT EXISTS yape_esperado numeric(10,2) NULL;
 ALTER TABLE edenpos.sesion_caja ADD COLUMN IF NOT EXISTS yape_contado numeric(10,2) NULL;
 
@@ -167,7 +174,7 @@ CREATE TABLE IF NOT EXISTS edenpos.movimiento_caja (
   created_at timestamp without time zone NOT NULL
 );
 
--- Medio de cada movimiento de caja (RF-04): Efectivo o Yape. Por ahora la app NO lo replica (trabajo local); la columna queda lista.
+-- Medio de cada movimiento de caja (RF-04): Efectivo o Yape. La app la replica cuando existe aquí.
 ALTER TABLE edenpos.movimiento_caja ADD COLUMN IF NOT EXISTS medio varchar(10) NOT NULL DEFAULT 'Efectivo';
 
 CREATE TABLE IF NOT EXISTS edenpos.recibo (
@@ -190,8 +197,8 @@ CREATE TABLE IF NOT EXISTS edenpos.recibo (
   refund_reason varchar(200) NULL
 );
 
--- Saldo pendiente autorizado por la dueña, su cobro posterior (RN-01) y hora de ingreso de la visita (RF-17). Idempotente. Por ahora la app
--- NO replica estas columnas (trabajo local, ver SupabaseReplica.cs); quedan listas con sus valores por defecto.
+-- Saldo pendiente autorizado por la dueña, su cobro posterior (RN-01) y hora de ingreso de la visita (RF-17). Idempotente. La app las
+-- replica cuando existen aquí (ver ReplicaOptionalColumns en SupabaseReplica.cs).
 ALTER TABLE edenpos.recibo ADD COLUMN IF NOT EXISTS saldo_pendiente numeric(10,2) NOT NULL DEFAULT 0;
 ALTER TABLE edenpos.recibo ADD COLUMN IF NOT EXISTS saldo_autorizado_por varchar(60) NULL;
 ALTER TABLE edenpos.recibo ADD COLUMN IF NOT EXISTS saldo_cobrado_at timestamp without time zone NULL;
@@ -226,7 +233,7 @@ CREATE TABLE IF NOT EXISTS edenpos.comprobante (
   ultimo_intento timestamp without time zone NULL
 );
 
--- Último mensaje del emisor SIMULADO (RF-21). Por ahora la app NO lo replica (trabajo local); la columna queda lista.
+-- Último mensaje del emisor SIMULADO (RF-21). La app la replica cuando existe aquí.
 ALTER TABLE edenpos.comprobante ADD COLUMN IF NOT EXISTS mensaje_respuesta varchar(200) NULL;
 
 CREATE TABLE IF NOT EXISTS edenpos.movimiento_inventario (
@@ -267,7 +274,9 @@ CREATE TABLE IF NOT EXISTS edenpos.configuracion (
   CONSTRAINT chk_configuracion_single_row CHECK (id = 1)
 );
 
--- Cargo por pérdida de llave y llaves fuera de uso (RF-19 / RN-06 / RN-07). Por ahora la app NO los replica (trabajo local); las columnas quedan listas.
+-- Simular rechazo de comprobantes (RF-21, emisor simulado): vale para todas las cajas. La app la replica cuando existe aquí.
+ALTER TABLE edenpos.configuracion ADD COLUMN IF NOT EXISTS simular_rechazo_comprobantes boolean NOT NULL DEFAULT false;
+-- Cargo por pérdida de llave y llaves fuera de uso (RF-19 / RN-06 / RN-07). La app las replica cuando existen aquí.
 ALTER TABLE edenpos.configuracion ADD COLUMN IF NOT EXISTS cargo_perdida_llave numeric(10,2) NOT NULL DEFAULT 0;
 ALTER TABLE edenpos.configuracion ADD COLUMN IF NOT EXISTS llaves_fuera_uso varchar(120) NOT NULL DEFAULT '';
 

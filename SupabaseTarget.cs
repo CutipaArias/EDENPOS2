@@ -26,6 +26,8 @@ namespace EdenPOS
         IEnumerable<object[]> ReadAll(ReplicaTable table);
         void SetInfo(string key, string value);
         string GetInfo(string key);
+        // Columnas que la tabla tiene en el destino (leídas en EnsureReady), o null si la tabla no existe allí.
+        ICollection<string> GetColumnNames(string table);
     }
 
     // Destino de la réplica: PostgreSQL de Supabase (esquema "edenpos", ver devdb/supabase/01_esquema_replica.sql).
@@ -285,6 +287,16 @@ namespace EdenPOS
                     command.ExecuteNonQuery();
                 }
             });
+        }
+
+        public ICollection<string> GetColumnNames(string table)
+        {
+            Dictionary<string, Dictionary<string, string>> cache;
+            lock (cacheLock) cache = columnTypes;
+            if (cache == null)
+                throw new InvalidOperationException("Llame a EnsureReady antes de usar la réplica de Supabase.");
+            Dictionary<string, string> columns;
+            return table != null && cache.TryGetValue(table, out columns) ? new HashSet<string>(columns.Keys, StringComparer.Ordinal) : null;
         }
 
         public string GetInfo(string key)

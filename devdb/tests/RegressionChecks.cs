@@ -626,15 +626,31 @@ internal static class RegressionChecks
                     var oldRow = AppData.GetShiftReport(new DateTime(2020, 1, 1), new DateTime(2020, 1, 1)).Rows.Single();
                     Check(oldRow.ExpectedYape == null && oldRow.YapeDifference == null && oldRow.Difference == 10m, "RF-05: un turno anterior sigue en el reporte sin datos de Yape.");
 
-                    // Réplica de Supabase: las columnas nuevas se quedan en la base local (igual que observacion_cierre).
+                    // Réplica de Supabase: las columnas nuevas se replican si Supabase las tiene; las de seguridad nunca.
                     var tables = (System.Collections.IEnumerable)Invoke(typeof(AppData), null, "ReplicaBuildTables");
                     foreach (var info in tables)
                     {
                         var table = info.GetType().GetField("Table").GetValue(info);
                         var name = (string)table.GetType().GetField("Name").GetValue(table);
                         var columns = (string[])table.GetType().GetField("Columns").GetValue(table);
-                        if (name == "sesion_caja") Check(!columns.Contains("yape_esperado") && !columns.Contains("yape_contado") && columns.Contains("monto_esperado"), "RF-05: la réplica omite las columnas de Yape del cierre.");
-                        if (name == "movimiento_caja") Check(!columns.Contains("medio") && columns.Contains("importe"), "RF-04: la réplica omite el medio del movimiento.");
+                        if (name == "sesion_caja")
+                        {
+                            Check(columns.Contains("yape_esperado") && columns.Contains("yape_contado") && columns.Contains("monto_esperado"), "RF-05: la réplica incluye el Yape del cierre cuando Supabase lo admite.");
+                            var missingCols = new List<string>();
+                            var oldRemote = AppData.ReplicaSelectColumns("sesion_caja", columns, columns.Where(c => c != "yape_esperado" && c != "yape_contado" && c != "observacion_cierre").ToList(), missingCols);
+                            Check(!oldRemote.Contains("yape_esperado") && oldRemote.Contains("monto_esperado") && missingCols.Contains("sesion_caja.yape_contado") && missingCols.Count == 3,
+                                "RF-05: con un esquema de Supabase anterior, el Yape del cierre no se replica y queda en el aviso.");
+                        }
+                        if (name == "movimiento_caja") Check(columns.Contains("medio") && columns.Contains("importe"), "RF-04: la réplica incluye el medio del movimiento.");
+                        if (name == "configuracion") Check(!columns.Contains("dni_api_token_protected"), "Réplica: el token de DNI nunca se replica.");
+                        if (name == "usuario")
+                        {
+                            Check(!columns.Contains("intentos_fallidos") && !columns.Contains("bloqueado_en"), "Réplica: el bloqueo de cuentas nunca se replica.");
+                            var none = new List<string>();
+                            Check(!AppData.ReplicaSelectColumns("usuario", new[] { "id_usuario", "intentos_fallidos" }, new[] { "id_usuario", "intentos_fallidos" }, none).Contains("intentos_fallidos") && none.Count == 0,
+                                "Réplica: el bloqueo no se replica aunque Supabase tenga la columna.");
+                        }
+                        Check(name != "impresora_pc", "Réplica: la impresora de cada PC no se replica.");
                     }
 
                     // Copia nueva (con las columnas) y copia "antigua" (sin ellas): ambas deben restaurarse.
@@ -1136,14 +1152,14 @@ internal static class RegressionChecks
                 var after = AppData.GetShiftBalance(debtShift);
                 Check(after.YapeSales - before.YapeSales == total && after.CashSales == before.CashSales, "RF-05: el saldo cobrado por Yape suma al Yape esperado de su turno.");
 
-                // Réplica en Supabase: las columnas nuevas de recibo se quedan en la base local.
+                // Réplica en Supabase: las columnas nuevas de recibo se replican (si el esquema remoto las tiene).
                 var tables = (System.Collections.IEnumerable)Invoke(typeof(AppData), null, "ReplicaBuildTables");
                 foreach (var info in tables)
                 {
                     var table = Member(info, "Table");
                     if ((string)Member(table, "Name") != "recibo") continue;
                     var columns = (string[])Member(table, "Columns");
-                    Check(columns.Contains("total") && !columns.Any(c => newColumns.Contains(c)), "RN-01: la réplica omite las columnas nuevas de recibo.");
+                    Check(columns.Contains("total") && newColumns.All(c => columns.Contains(c)), "RN-01: la réplica incluye las columnas nuevas de recibo cuando Supabase las admite.");
                 }
 
                 // Copia nueva (con las columnas) y copia "antigua" (sin ellas): ambas deben restaurarse.

@@ -64,7 +64,7 @@ la cadena de conexión intente cambiar esas opciones.
 ## Copia en la nube
 
 - **Carpeta:** Configuración → Copias de seguridad y datos → Copia automática. Elija una carpeta de OneDrive o Google Drive.
-- **Supabase:** siga `devdb\supabase\LEEME.md` (script `01_esquema_replica.sql`, luego Configuración → Réplica en Supabase). Actívela solo en la PC que tiene la base principal.
+- **Supabase:** siga `devdb\supabase\LEEME.md` (script `01_esquema_replica.sql`, luego Configuración → Réplica en Supabase). Actívela solo en la PC que tiene la base principal. Si su proyecto ya tenía la réplica de una versión anterior, vuelva a ejecutar `01_esquema_replica.sql` (no borra datos): mientras no lo haga, la réplica no copia saldos pendientes, medios de pago de la caja ni el tipo de los artículos, y la pantalla lo avisa.
 
 ## Estructura
 
