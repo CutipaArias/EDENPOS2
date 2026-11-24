@@ -96,9 +96,10 @@ namespace EdenPOS
             var movements = AppData.CashMovements.Where(x => x.ShiftId == shift.Id).OrderByDescending(x => x.CreatedAt).ToList();
             var income = movements.Where(x => x.Amount > 0).Sum(x => x.Amount);
             var outflow = movements.Where(x => x.Amount < 0).Sum(x => x.Amount);
-            var paidReceipts = AppData.Receipts.Where(x => x.CreatedAt >= shift.OpenedAt && x.Status == "Pagado").ToList();
-            var cashSales = paidReceipts.Sum(x => x.CashPaid);
-            var yapeSales = paidReceipts.Sum(x => x.YapePaid);
+            // RN-01: lo pagado en las visitas del turno más los saldos pendientes cobrados durante el turno (misma regla que la caja esperada).
+            var receipts = AppData.Receipts;
+            var cashSales = Receipt.CashBetween(receipts, shift.OpenedAt, DateTime.MaxValue);
+            var yapeSales = Receipt.YapeBetween(receipts, shift.OpenedAt, DateTime.MaxValue);
 
             var table = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, BackColor = Theme.Canvas, Margin = new Padding(0), Padding = new Padding(0), MinimumSize = new Size(640, 520) };
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 38f));

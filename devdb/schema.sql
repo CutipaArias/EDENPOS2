@@ -137,6 +137,17 @@ CREATE TABLE recibo (
   estado VARCHAR(12) NOT NULL,
   refunded_at DATETIME NULL,
   refund_reason VARCHAR(200) NULL,
+  -- RN-01: saldo pendiente autorizado por la duena (total = pagado en la visita + saldo_pendiente) y su cobro posterior.
+  saldo_pendiente DECIMAL(10,2) NOT NULL DEFAULT 0,
+  saldo_autorizado_por VARCHAR(60) NULL,
+  saldo_cobrado_at DATETIME NULL,
+  saldo_cobrado_medio VARCHAR(10) NULL,
+  saldo_cobrado_efectivo DECIMAL(10,2) NOT NULL DEFAULT 0,
+  saldo_cobrado_yape DECIMAL(10,2) NOT NULL DEFAULT 0,
+  saldo_cobrado_por VARCHAR(60) NULL,
+  saldo_id_sesion CHAR(32) NULL,
+  -- RF-17: hora de creacion del ticket guardado (ingreso de la visita); NULL si la venta no venia de un ticket.
+  ingreso_at DATETIME NULL,
   FOREIGN KEY (id_sesion) REFERENCES sesion_caja(id_sesion)
 );
 

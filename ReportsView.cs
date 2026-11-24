@@ -202,6 +202,7 @@ namespace EdenPOS
         private ShiftReport shiftData;
         private SalesReport salesData;
         private InventoryReport inventoryData;
+        private VisitReport visitData;
         private DateTime loadedFrom, loadedTo;
 
         // Caja
@@ -211,7 +212,7 @@ namespace EdenPOS
         private readonly EmptyState shiftEmpty = ReportUi.Empty("Sin turnos en este rango", "No hubo turnos con apertura en este rango de fechas.");
 
         // Ventas
-        private Label soldValue, soldDetail, receiptsValue, receiptsDetail, ticketValue, ticketDetail, refundValue, refundDetail;
+        private Label soldValue, soldDetail, receiptsValue, receiptsDetail, ticketValue, ticketDetail, refundValue, refundDetail, pendingValue, pendingDetail;
         private readonly DataGridView paymentGrid = ReportUi.Grid();
         private readonly EmptyState paymentEmpty = ReportUi.Empty("Sin ventas en este rango", "No hubo ventas pagadas en este rango de fechas.");
         private readonly DataGridView categoryGrid = ReportUi.Grid();
@@ -226,6 +227,11 @@ namespace EdenPOS
         private readonly EmptyState movementEmpty = ReportUi.Empty("Sin movimientos", "No hubo movimientos de inventario en este rango de fechas.");
         private readonly DataGridView lowStockGrid = ReportUi.Grid();
         private readonly EmptyState lowStockEmpty = ReportUi.Empty("Todo en orden", "Ningún producto con control de inventario está en su stock mínimo.");
+
+        // Visitas (RF-17)
+        private Label visitsValue, visitsDetail, peopleValue, peopleDetail, durationValue, durationDetail, visitPendingValue, visitPendingDetail;
+        private readonly DataGridView visitGrid = ReportUi.Grid();
+        private readonly EmptyState visitEmpty = ReportUi.Empty("Sin visitas en este rango", "No hubo visitas cobradas en este rango de fechas.");
 
         public ReportsView()
         {
@@ -276,6 +282,7 @@ namespace EdenPOS
             AddTab(segmentFlow, "caja", "Caja");
             AddTab(segmentFlow, "ventas", "Ventas");
             AddTab(segmentFlow, "inventario", "Inventario");
+            AddTab(segmentFlow, "visitas", "Visitas");
             segments.Controls.Add(segmentFlow);
             root.Controls.Add(segments, 0, 0);
 
@@ -291,6 +298,7 @@ namespace EdenPOS
             sections["caja"] = BuildShiftSection();
             sections["ventas"] = BuildSalesSection();
             sections["inventario"] = BuildInventorySection();
+            sections["visitas"] = BuildVisitSection();
             foreach (var section in sections.Values)
             {
                 section.Dock = DockStyle.Fill;
@@ -369,6 +377,7 @@ namespace EdenPOS
                 shiftData = AppData.GetShiftReport(from, to);
                 salesData = AppData.GetSalesReport(from, to);
                 inventoryData = AppData.GetInventoryReport(from, to);
+                visitData = AppData.GetVisitReport(from, to);
                 loadedFrom = from;
                 loadedTo = to;
             }
@@ -385,6 +394,7 @@ namespace EdenPOS
             BindShifts();
             BindSales();
             BindInventory();
+            BindVisits();
         }
 
         // ---------- Caja ----------
@@ -475,11 +485,12 @@ namespace EdenPOS
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 50f));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 50f));
 
-            var cards = CardRow(4);
+            var cards = CardRow(5);
             cards.Controls.Add(StatCard("Total vendido", out soldValue, out soldDetail), 0, 0);
             cards.Controls.Add(StatCard("Recibos pagados", out receiptsValue, out receiptsDetail), 1, 0);
             cards.Controls.Add(StatCard("Ticket promedio", out ticketValue, out ticketDetail), 2, 0);
             cards.Controls.Add(StatCard("Reembolsos", out refundValue, out refundDetail), 3, 0);
+            cards.Controls.Add(StatCard("Saldo pendiente", out pendingValue, out pendingDetail), 4, 0);
             layout.Controls.Add(cards, 0, 0);
             layout.SetColumnSpan(cards, 2);
 
@@ -488,7 +499,9 @@ namespace EdenPOS
             ReportUi.Column(paymentGrid, "Total", true);
             ReportUi.Column(paymentGrid, "En efectivo", true);
             ReportUi.Column(paymentGrid, "En Yape", true);
-            layout.Controls.Add(ReportUi.Block("Por medio de pago", "En los pagos mixtos, cada parte se suma a efectivo o a Yape.", paymentGrid, paymentEmpty), 0, 1);
+            ReportUi.Column(paymentGrid, "Saldo pendiente", true);
+            layout.Controls.Add(ReportUi.Block("Por medio de pago",
+                "Efectivo y Yape: lo pagado. Los saldos cobrados en el rango van aparte (su venta ya se contó el día de la visita).", paymentGrid, paymentEmpty), 0, 1);
 
             ReportUi.Column(promoGrid, "Promoción", false, 1.4f);
             ReportUi.Column(promoGrid, "Veces aplicada", true);
@@ -516,11 +529,24 @@ namespace EdenPOS
             refundValue.Text = report.RefundedCount.ToString(CultureInfo.InvariantCulture);
             refundValue.ForeColor = report.RefundedCount > 0 ? Theme.Warning : Theme.Ink;
             refundDetail.Text = Theme.Money(report.RefundedAmount) + " (no incluido en el total)";
+            pendingValue.Text = Theme.Money(report.PendingBalance);
+            pendingValue.ForeColor = report.PendingBalance > 0m ? Theme.Warning : Theme.Ink;
+            pendingDetail.Text = report.PendingCount + (report.PendingCount == 1 ? " recibo" : " recibos") + " · cobrado en el rango " + Theme.Money(report.Collected);
 
             paymentGrid.Rows.Clear();
             foreach (var row in report.ByPayment)
-                paymentGrid.Rows.Add(row.Method, row.Count.ToString(CultureInfo.InvariantCulture), Theme.Money(row.Total), Theme.Money(row.Cash), Theme.Money(row.Yape));
-            ReportUi.Show(paymentGrid, paymentEmpty, report.ByPayment.Count > 0);
+            {
+                var index = paymentGrid.Rows.Add(row.Method, row.Count.ToString(CultureInfo.InvariantCulture), Theme.Money(row.Total), Theme.Money(row.Cash), Theme.Money(row.Yape), Theme.Money(row.PendingBalance));
+                if (row.PendingBalance > 0m) paymentGrid.Rows[index].Cells[5].Style.ForeColor = Theme.Warning;
+            }
+            // RN-01: pagos posteriores de saldos (por fecha de pago). No suman al total vendido.
+            if (report.CollectedCount > 0)
+            {
+                var index = paymentGrid.Rows.Add("Cobro de saldos pendientes", report.CollectedCount.ToString(CultureInfo.InvariantCulture), "—",
+                    Theme.Money(report.CollectedCash), Theme.Money(report.CollectedYape), "—");
+                paymentGrid.Rows[index].DefaultCellStyle.BackColor = Theme.SurfaceSunken;
+            }
+            ReportUi.Show(paymentGrid, paymentEmpty, report.ByPayment.Count > 0 || report.CollectedCount > 0);
             paymentGrid.ClearSelection();
 
             categoryGrid.Rows.Clear();
@@ -611,11 +637,77 @@ namespace EdenPOS
             lowPill.Tone = report.LowStock.Count == 0 ? Tone.Success : Tone.Danger;
         }
 
+        // ---------- Visitas (RF-17) ----------
+
+        private Control BuildVisitSection()
+        {
+            var layout = SectionLayout(1, 2);
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+
+            var cards = CardRow(4);
+            cards.Controls.Add(StatCard("Visitas", out visitsValue, out visitsDetail), 0, 0);
+            cards.Controls.Add(StatCard("Personas", out peopleValue, out peopleDetail), 1, 0);
+            cards.Controls.Add(StatCard("Duración promedio", out durationValue, out durationDetail), 2, 0);
+            cards.Controls.Add(StatCard("Saldo pendiente", out visitPendingValue, out visitPendingDetail), 3, 0);
+            layout.Controls.Add(cards, 0, 0);
+
+            ReportUi.Column(visitGrid, "Día", false, 1.4f);
+            ReportUi.Column(visitGrid, "Visitas", true, 0.8f);
+            ReportUi.Column(visitGrid, "Adultos", true, 0.8f);
+            ReportUi.Column(visitGrid, "Niños", true, 0.8f);
+            ReportUi.Column(visitGrid, "Personas", true, 0.8f);
+            ReportUi.Column(visitGrid, "Duración promedio", true);
+            ReportUi.Column(visitGrid, "Total", true);
+            ReportUi.Column(visitGrid, "Saldo pendiente", true);
+            layout.Controls.Add(ReportUi.Block("Visitas por día",
+                "Recibos pagados que venían de un ticket guardado o con una entrada de sauna. Personas estimadas por las entradas; duración desde que se creó el ticket hasta el cobro.",
+                visitGrid, visitEmpty), 0, 1);
+            return layout;
+        }
+
+        private void BindVisits()
+        {
+            var report = visitData;
+            var culture = CultureInfo.GetCultureInfo("es-PE");
+            visitGrid.Rows.Clear();
+            foreach (var row in report.ByDay)
+            {
+                var index = visitGrid.Rows.Add(row.Day.ToString("ddd dd/MM/yyyy", culture), row.Visits.ToString(CultureInfo.InvariantCulture),
+                    row.Adults.ToString(CultureInfo.InvariantCulture), row.Children.ToString(CultureInfo.InvariantCulture), row.People.ToString(CultureInfo.InvariantCulture),
+                    AppData.FormatDuration(row.AverageMinutes), Theme.Money(row.Total), Theme.Money(row.PendingBalance));
+                if (row.PendingBalance > 0m) visitGrid.Rows[index].Cells[7].Style.ForeColor = Theme.Warning;
+            }
+            if (report.ByDay.Count > 0)
+            {
+                var index = visitGrid.Rows.Add("Total", report.Visits.ToString(CultureInfo.InvariantCulture), report.Adults.ToString(CultureInfo.InvariantCulture),
+                    report.Children.ToString(CultureInfo.InvariantCulture), report.People.ToString(CultureInfo.InvariantCulture),
+                    AppData.FormatDuration(report.AverageMinutes), Theme.Money(report.Total), Theme.Money(report.PendingBalance));
+                var totalRow = visitGrid.Rows[index];
+                totalRow.DefaultCellStyle.Font = ReportUi.BoldBodyFont;
+                totalRow.DefaultCellStyle.BackColor = Theme.SurfaceSunken;
+            }
+            ReportUi.Show(visitGrid, visitEmpty, report.ByDay.Count > 0);
+            visitGrid.ClearSelection();
+
+            var days = report.ByDay.Count;
+            visitsValue.Text = report.Visits.ToString(CultureInfo.InvariantCulture);
+            visitsDetail.Text = days == 0 ? "Sin visitas" : (days == 1 ? "En 1 día" : "En " + days + " días") + " · " +
+                Math.Round((decimal)report.Visits / days, 1).ToString("0.#", CultureInfo.CurrentCulture) + " por día";
+            peopleValue.Text = report.People.ToString(CultureInfo.InvariantCulture);
+            peopleDetail.Text = report.Adults + (report.Adults == 1 ? " adulto" : " adultos") + " · " + report.Children + (report.Children == 1 ? " niño" : " niños");
+            durationValue.Text = AppData.FormatDuration(report.AverageMinutes);
+            durationDetail.Text = report.TimedVisits == 0 ? "Sin hora de ingreso registrada" : "De " + report.TimedVisits + (report.TimedVisits == 1 ? " visita con ingreso" : " visitas con ingreso");
+            visitPendingValue.Text = Theme.Money(report.PendingBalance);
+            visitPendingValue.ForeColor = report.PendingBalance > 0m ? Theme.Warning : Theme.Ink;
+            visitPendingDetail.Text = report.PendingCount + (report.PendingCount == 1 ? " visita con saldo por cobrar" : " visitas con saldo por cobrar");
+        }
+
         // ---------- Exportación ----------
 
         private void ExportCurrent()
         {
-            if (shiftData == null || salesData == null || inventoryData == null)
+            if (shiftData == null || salesData == null || inventoryData == null || visitData == null)
             {
                 Theme.Message(this, Tone.Warning, "Aún no hay datos cargados. Corrija el rango de fechas e intente de nuevo.", "Exportar CSV");
                 return;
@@ -643,15 +735,29 @@ namespace EdenPOS
                 rows.Add(new object[] { "Ticket promedio", salesData.AverageTicket });
                 rows.Add(new object[] { "Recibos reembolsados", salesData.RefundedCount });
                 rows.Add(new object[] { "Monto reembolsado", salesData.RefundedAmount });
+                rows.Add(new object[] { "Saldo pendiente por cobrar (incluido en el total vendido)", salesData.PendingBalance });
+                rows.Add(new object[] { "Recibos con saldo pendiente", salesData.PendingCount });
+                rows.Add(new object[] { "Saldos cobrados en el rango (por fecha de pago)", salesData.Collected });
                 rows.Add(new object[0]);
-                rows.Add(new object[] { "Medio de pago", "Recibos", "Total", "En efectivo", "En Yape" });
-                foreach (var r in salesData.ByPayment) rows.Add(new object[] { r.Method, r.Count, r.Total, r.Cash, r.Yape });
+                rows.Add(new object[] { "Medio de pago", "Recibos", "Total", "En efectivo", "En Yape", "Saldo pendiente" });
+                foreach (var r in salesData.ByPayment) rows.Add(new object[] { r.Method, r.Count, r.Total, r.Cash, r.Yape, r.PendingBalance });
+                if (salesData.CollectedCount > 0)
+                    rows.Add(new object[] { "Cobro de saldos pendientes", salesData.CollectedCount, "", salesData.CollectedCash, salesData.CollectedYape, "" });
                 rows.Add(new object[0]);
                 rows.Add(new object[] { "Categoría (importe bruto, antes de descuentos)", "Unidades", "Importe" });
                 foreach (var r in salesData.ByCategory) rows.Add(new object[] { r.Category, r.Units, r.Amount });
                 rows.Add(new object[0]);
                 rows.Add(new object[] { "Promoción", "Veces aplicada", "Descuento total" });
                 foreach (var r in salesData.Promotions) rows.Add(new object[] { ReportUi.PromotionName(r.PromotionId), r.Count, r.Discount });
+            }
+            else if (section == "visitas")
+            {
+                rows.Add(new object[] { "Día", "Visitas", "Adultos", "Niños", "Personas", "Duración promedio (min)", "Total", "Saldo pendiente" });
+                foreach (var r in visitData.ByDay)
+                    rows.Add(new object[] { r.Day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), r.Visits, r.Adults, r.Children, r.People,
+                        r.AverageMinutes.HasValue ? (object)(decimal)r.AverageMinutes.Value : "", r.Total, r.PendingBalance });
+                rows.Add(new object[] { "Total", visitData.Visits, visitData.Adults, visitData.Children, visitData.People,
+                    visitData.AverageMinutes.HasValue ? (object)(decimal)visitData.AverageMinutes.Value : "", visitData.Total, visitData.PendingBalance });
             }
             else
             {

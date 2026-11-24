@@ -15,6 +15,7 @@ namespace EdenPOS
         private readonly Panel listHost;
         private readonly ScreenHeader header;
         private readonly Button paymentSummaryButton;
+        private readonly SegmentChip pendingFilter;
         private EmptyState listEmpty;
         private Receipt selected;
 
@@ -33,6 +34,12 @@ namespace EdenPOS
             searchField.Width = 320;
             header.AddAction(searchField);
             searchField.Margin = new Padding(Theme.Space.Sm, (Theme.Dim.Control - Theme.Dim.Field) / 2, 0, 0);
+            // RN-01: filtro de recibos que aún tienen saldo pendiente por cobrar.
+            pendingFilter = new SegmentChip("Con saldo pendiente") { ShowCheck = true };
+            pendingFilter.Size = pendingFilter.GetPreferredSize(Size.Empty);
+            pendingFilter.Click += (s, e) => { pendingFilter.Active = !pendingFilter.Active; LoadReceipts(); };
+            header.AddAction(pendingFilter);
+            pendingFilter.Margin = new Padding(Theme.Space.Sm, (Theme.Dim.Control - Theme.Dim.Field) / 2, 0, 0);
 
             var content = new TableLayoutPanel
             {
@@ -111,6 +118,8 @@ namespace EdenPOS
                     (x.CustomerName ?? "").IndexOf(term, StringComparison.CurrentCultureIgnoreCase) >= 0 ||
                     (x.PaymentMethod ?? "").IndexOf(term, StringComparison.CurrentCultureIgnoreCase) >= 0);
             }
+            var onlyPending = pendingFilter != null && pendingFilter.Active;
+            if (onlyPending) receipts = receipts.Where(x => x.OutstandingBalance > 0m);
 
             receiptGrid.Rows.Clear();
             var culture = CultureInfo.GetCultureInfo("es-PE");
@@ -127,11 +136,14 @@ namespace EdenPOS
                 style.SelectionBackColor = Theme.SurfaceSunken; style.SelectionForeColor = Theme.Ink;
                 foreach (var receipt in day.OrderByDescending(x => x.CreatedAt))
                 {
-                    var info = Theme.Money(receipt.Total) + "\n" + receipt.CreatedAt.ToString("HH:mm") + "  ·  " + receipt.PaymentMethod + (receipt.Status == "Reembolsado" ? "  ·  Reembolsado" : "");
+                    var info = Theme.Money(receipt.Total) + "\n" + receipt.CreatedAt.ToString("HH:mm") + "  ·  " + receipt.PaymentMethod + (receipt.Status == "Reembolsado" ? "  ·  Reembolsado" : "") +
+                               (receipt.OutstandingBalance > 0m ? "  ·  Saldo " + Theme.Money(receipt.OutstandingBalance) : "");
                     var index = receiptGrid.Rows.Add(info, "#2-" + receipt.Number);
                     receiptGrid.Rows[index].Tag = receipt;
                     if (receipt.Status == "Reembolsado")
                         receiptGrid.Rows[index].DefaultCellStyle.ForeColor = Theme.Muted;
+                    else if (receipt.OutstandingBalance > 0m)
+                        receiptGrid.Rows[index].DefaultCellStyle.ForeColor = Theme.Warning;
                     if (receipt.Id == previousId) receiptGrid.Rows[index].Selected = true;
                 }
             }
@@ -151,7 +163,8 @@ namespace EdenPOS
             if (listEmpty != null)
             {
                 listEmpty.Visible = none;
-                if (term.Length > 0) { listEmpty.Title = "Sin resultados"; listEmpty.Hint = "Pruebe con otro número, DNI o nombre."; }
+                if (onlyPending && term.Length == 0) { listEmpty.Title = "Sin saldos pendientes"; listEmpty.Hint = "Ningún recibo tiene saldo por cobrar."; }
+                else if (term.Length > 0) { listEmpty.Title = "Sin resultados"; listEmpty.Hint = "Pruebe con otro número, DNI o nombre."; }
                 else { listEmpty.Title = "Todavía no hay recibos"; listEmpty.Hint = "Cuando cobre una venta, aparecerá aquí."; }
             }
             if (none)
@@ -298,8 +311,32 @@ namespace EdenPOS
                 AddPair(sums, "Efectivo", Theme.Money(selected.CashPaid), Theme.Body, Theme.Ink, Theme.Muted);
                 AddPair(sums, "Yape", Theme.Money(selected.YapePaid), Theme.Body, Theme.Ink, Theme.Muted);
             }
-            else AddPair(sums, "Pagado con " + selected.PaymentMethod, Theme.Money(selected.Total), Theme.Body, Theme.Ink, Theme.Muted);
+            else AddPair(sums, "Pagado con " + selected.PaymentMethod, Theme.Money(selected.PaidAtVisit), Theme.Body, Theme.Ink, Theme.Muted);
+            // RN-01: saldo pendiente autorizado y su cobro posterior.
+            if (selected.PendingBalance > 0m)
+            {
+                AddPair(sums, "Saldo pendiente (autorizó " + (selected.BalanceAuthorizedBy ?? "—") + ")", Theme.Money(selected.PendingBalance), Theme.Body,
+                    selected.OutstandingBalance > 0m ? Theme.Warning : Theme.Ink, Theme.Muted);
+                if (selected.BalanceCollectedAt.HasValue)
+                    AddPair(sums, "Saldo cobrado el " + selected.BalanceCollectedAt.Value.ToString("dd/MM/yyyy HH:mm") + " con " + (selected.BalanceCollectedMethod ?? "—") +
+                        (string.IsNullOrEmpty(selected.BalanceCollectedBy) ? "" : " por " + selected.BalanceCollectedBy),
+                        Theme.Money(selected.BalanceCollectedCash + selected.BalanceCollectedYape), Theme.Body, Theme.Success, Theme.Muted);
+            }
             stack.Add(sums);
+            if (selected.OutstandingBalance > 0m)
+            {
+                stack.Add(Gap(Theme.Space.Md));
+                var collectRow = new Panel { Dock = DockStyle.Top, Height = Theme.Dim.Control, BackColor = Color.Transparent };
+                var collect = Theme.Button("Cobrar saldo", ButtonVariant.Primary);
+                collect.Width = 160;
+                collect.Dock = DockStyle.Right;
+                collect.Click += CollectBalance_Click;
+                collectRow.Controls.Add(collect);
+                var owed = new Label { Text = "Saldo por cobrar: " + Theme.Money(selected.OutstandingBalance), Font = Theme.Emphasis, ForeColor = Theme.Warning, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
+                collectRow.Controls.Add(owed);
+                owed.BringToFront();
+                stack.Add(collectRow);
+            }
 
             // Boleta simulada.
             if (selected.Comprobante != null)
@@ -393,7 +430,8 @@ namespace EdenPOS
                 return;
             }
             var confirm = MessageBox.Show(
-                "Se marcará el recibo #2-" + selected.Number + " como reembolsado por " + Theme.Money(selected.Total) + ".",
+                "Se marcará el recibo #2-" + selected.Number + " como reembolsado por " + Theme.Money(selected.TotalPaid) + " (lo pagado)." +
+                (selected.OutstandingBalance > 0m ? " El saldo pendiente de " + Theme.Money(selected.OutstandingBalance) + " queda anulado." : ""),
                 "Confirmar reembolso",
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Warning);
@@ -412,6 +450,39 @@ namespace EdenPOS
                 Theme.Message(FindForm(), Tone.Danger, AppData.DescribeDatabaseError(ex), "No se pudo reembolsar");
             }
             LoadReceipts();
+        }
+
+        // RN-01: cobra el saldo pendiente completo. Entra al turno abierto como cobro de hoy (AppData.CollectBalance lo valida).
+        private void CollectBalance_Click(object sender, EventArgs e)
+        {
+            if (selected == null || selected.OutstandingBalance <= 0m) return;
+            var receipt = selected;
+            if (AppData.OpenShift == null)
+            {
+                Theme.Message(FindForm(), Tone.Warning, "Abra un turno antes de cobrar el saldo: el pago entra a la caja abierta.", "Turno requerido");
+                return;
+            }
+            using (var dialog = new CheckoutDialog(receipt.OutstandingBalance, "Cobrar saldo del recibo #2-" + receipt.Number))
+            {
+                if (dialog.ShowDialog(FindForm()) != DialogResult.OK) return;
+                try
+                {
+                    AppData.CollectBalance(receipt.Id, dialog.PaymentMethod, dialog.AmountReceived, dialog.CashAmount, dialog.YapeAmount);
+                    var change = dialog.PaymentMethod == "Efectivo" ? Math.Max(0m, dialog.AmountReceived - receipt.OutstandingBalance) : 0m;
+                    Theme.Message(FindForm(), Tone.Success, "Saldo de " + Theme.Money(receipt.OutstandingBalance) + " cobrado." +
+                        (change > 0m ? " Vuelto: " + Theme.Money(change) + "." : ""), "Cobrar saldo");
+                }
+                catch (Exception ex) when (ex is InvalidOperationException || ex is ArgumentException)
+                {
+                    Theme.Message(FindForm(), Tone.Warning, ex.Message, "No se pudo cobrar el saldo");
+                }
+                catch (MySqlConnector.MySqlException ex)
+                {
+                    AppData.LogError(ex, "Cobrar saldo pendiente");
+                    Theme.Message(FindForm(), Tone.Danger, AppData.DescribeDatabaseError(ex), "No se pudo cobrar el saldo");
+                }
+            }
+            if (!IsDisposed && IsHandleCreated) BeginInvoke(new Action(() => { if (!IsDisposed) LoadReceipts(); }));
         }
 
         private void PaymentSummary_Click(object sender, EventArgs e)
@@ -437,8 +508,11 @@ namespace EdenPOS
 
         private void UpdatePaymentTotals()
         {
-            var paidToday = AppData.Receipts.Where(x => x.Status == "Pagado" && x.CreatedAt.Date == DateTime.Today).ToList();
-            header.Subtitle = "Hoy: efectivo " + Theme.Money(paidToday.Sum(x => x.CashPaid)) + "  ·  Yape " + Theme.Money(paidToday.Sum(x => x.YapePaid));
+            // Incluye los saldos pendientes cobrados hoy (RN-01).
+            var receipts = AppData.Receipts;
+            var today = DateTime.Today;
+            header.Subtitle = "Hoy: efectivo " + Theme.Money(Receipt.CashBetween(receipts, today, today.AddDays(1))) +
+                              "  ·  Yape " + Theme.Money(Receipt.YapeBetween(receipts, today, today.AddDays(1)));
         }
     }
 }

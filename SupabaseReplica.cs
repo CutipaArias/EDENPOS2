@@ -1213,7 +1213,10 @@ namespace EdenPOS
                                                // RF-19 / RN-06 / RN-07: cargos por pérdida y llaves fuera de uso, por ahora solo en la base local
                                                // (Supabase aún puede no tener las columnas; devdb/supabase/01_esquema_replica.sql ya las agrega).
                                                !(name == "configuracion" && (c.Key == "cargo_perdida_llave" || c.Key == "llaves_fuera_uso")) &&
-                                               !(name == "producto" && c.Key == "cargo_perdida")).ToList();
+                                               !(name == "producto" && c.Key == "cargo_perdida") &&
+                                               // RN-01 / RF-17: saldo pendiente, su cobro y hora de ingreso, por ahora solo en la base local
+                                               // (Supabase aún puede no tener las columnas; devdb/supabase/01_esquema_replica.sql ya las agrega).
+                                               !(name == "recibo" && AppData.ReceiptBalanceColumns.Any(x => x.Key == c.Key))).ToList();
                     var names = kept.Select(c => c.Key).ToArray();
                     var info = new ReplicaTableInfo
                     {

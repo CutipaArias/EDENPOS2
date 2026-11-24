@@ -124,11 +124,13 @@ namespace EdenPOS
                 case AuditActions.CuentaBloqueada:
                 case AuditActions.CargoPerdidaCambiado:
                 case AuditActions.LlavesQuitadas:
+                case AuditActions.SaldoPendienteAutorizado:
                     return Tone.Warning;
                 case AuditActions.CopiaRestaurada:
                 case AuditActions.DatosImportados:
                 case AuditActions.CuentaDesbloqueada:
                 case AuditActions.LlaveLiberada:
+                case AuditActions.SaldoCobrado:
                     return Tone.Info;
                 default:
                     return Tone.Neutral;
@@ -235,6 +237,8 @@ namespace EdenPOS
                 case AuditActions.LlaveLiberada: return "Llave liberada";
                 case AuditActions.CargoPerdidaCambiado: return "Cargo por pérdida cambiado";
                 case AuditActions.LlavesQuitadas: return "Llaves quitadas sin cobrar";
+                case AuditActions.SaldoPendienteAutorizado: return "Saldo pendiente autorizado";
+                case AuditActions.SaldoCobrado: return "Saldo pendiente cobrado";
                 default: return action;
             }
         }

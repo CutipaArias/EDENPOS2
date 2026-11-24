@@ -45,6 +45,20 @@ namespace EdenPOS
         public const string LlaveLiberada = "LLAVE_LIBERADA";
         public const string CargoPerdidaCambiado = "CARGO_PERDIDA_CAMBIADO";
         public const string LlavesQuitadas = "LLAVES_QUITADAS";
+        // RN-01: visita cobrada con saldo pendiente (autorizado por la dueña con su PIN) y pago posterior de ese saldo.
+        public const string SaldoPendienteAutorizado = "SALDO_PENDIENTE_AUTORIZADO";
+        public const string SaldoCobrado = "SALDO_COBRADO";
+    }
+
+    // RN-01: autorización para cerrar una visita sin cobrar todo. AddReceipt vuelve a comprobar en su transacción que OwnerUserId sea una
+    // dueña activa y no bloqueada, que el PIN sea el suyo y que el motivo tenga de 3 a 160 caracteres; Amount es el saldo que queda por cobrar.
+    public sealed class PendingBalanceAuthorization
+    {
+        public decimal Amount { get; set; }
+        public string OwnerUserId { get; set; }
+        public string OwnerName { get; set; }   // solo para mostrar; el nombre que se guarda sale de la base
+        public string OwnerPin { get; set; }
+        public string Reason { get; set; }
     }
 
     // RF-19: resultado de la devolución de llaves e implementos al cobrar una visita (ticket guardado con llaves).
@@ -121,6 +135,19 @@ namespace EdenPOS
         public DateTime? RefundedAt { get; set; }
         public string RefundReason { get; set; }
 
+        // RN-01: parte del total que quedó sin pagar al terminar la visita (recibo.saldo_pendiente) y quién lo autorizó. Total sigue siendo el
+        // importe de la venta (el comprobante se emite por el total); lo pagado en la visita es Total - PendingBalance.
+        public decimal PendingBalance { get; set; }
+        public string BalanceAuthorizedBy { get; set; }
+        // Pago posterior del saldo ("Cobrar saldo" en Recibos): entra a la caja abierta el día en que se paga.
+        public DateTime? BalanceCollectedAt { get; set; }
+        public string BalanceCollectedMethod { get; set; }
+        public decimal BalanceCollectedCash { get; set; }
+        public decimal BalanceCollectedYape { get; set; }
+        public string BalanceCollectedBy { get; set; }
+        // RF-17: hora de creación del ticket guardado (ingreso de la visita); null si la venta no venía de un ticket.
+        public DateTime? CheckInAt { get; set; }
+
         // Comprobante electrónico SIMULADO del recibo (null en recibos importados de JSON antiguos). No se serializa.
         [ScriptIgnore]
         public Comprobante Comprobante { get; set; }
@@ -129,11 +156,39 @@ namespace EdenPOS
         [ScriptIgnore]
         public decimal Subtotal { get { return Total + Discount; } }
 
+        // Lo pagado al cobrar la visita (sin el pago posterior del saldo).
         [ScriptIgnore]
-        public decimal CashPaid { get { return PaymentMethod == "Mixto" ? CashAmount : PaymentMethod == "Efectivo" ? Total : 0m; } }
+        public decimal PaidAtVisit { get { return Total - PendingBalance; } }
+
+        // Saldo que todavía se debe: 0 si ya se cobró o si el recibo se reembolsó (el reembolso anula la deuda).
+        [ScriptIgnore]
+        public decimal OutstandingBalance { get { return Status == "Pagado" && !BalanceCollectedAt.HasValue ? PendingBalance : 0m; } }
+
+        // Total realmente pagado por el cliente (visita + saldo cobrado después). Es lo que devuelve un reembolso.
+        [ScriptIgnore]
+        public decimal TotalPaid { get { return PaidAtVisit + (BalanceCollectedAt.HasValue ? BalanceCollectedCash + BalanceCollectedYape : 0m); } }
 
         [ScriptIgnore]
-        public decimal YapePaid { get { return PaymentMethod == "Mixto" ? YapeAmount : PaymentMethod == "Yape" ? Total : 0m; } }
+        public decimal CashPaid { get { return PaymentMethod == "Mixto" ? CashAmount : PaymentMethod == "Efectivo" ? PaidAtVisit : 0m; } }
+
+        [ScriptIgnore]
+        public decimal YapePaid { get { return PaymentMethod == "Mixto" ? YapeAmount : PaymentMethod == "Yape" ? PaidAtVisit : 0m; } }
+
+        // Efectivo / Yape que entraron en [from, to): lo pagado en la visita (por fecha del recibo) más el saldo cobrado después (por fecha de pago).
+        // Solo recibos Pagado, igual que la caja esperada.
+        public static decimal CashBetween(IEnumerable<Receipt> receipts, DateTime from, DateTime to)
+        {
+            return (receipts ?? Enumerable.Empty<Receipt>()).Where(x => x.Status == "Pagado").Sum(x =>
+                (x.CreatedAt >= from && x.CreatedAt < to ? x.CashPaid : 0m) +
+                (x.BalanceCollectedAt.HasValue && x.BalanceCollectedAt.Value >= from && x.BalanceCollectedAt.Value < to ? x.BalanceCollectedCash : 0m));
+        }
+
+        public static decimal YapeBetween(IEnumerable<Receipt> receipts, DateTime from, DateTime to)
+        {
+            return (receipts ?? Enumerable.Empty<Receipt>()).Where(x => x.Status == "Pagado").Sum(x =>
+                (x.CreatedAt >= from && x.CreatedAt < to ? x.YapePaid : 0m) +
+                (x.BalanceCollectedAt.HasValue && x.BalanceCollectedAt.Value >= from && x.BalanceCollectedAt.Value < to ? x.BalanceCollectedYape : 0m));
+        }
     }
 
     public sealed class SavedTicket

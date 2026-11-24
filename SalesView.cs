@@ -1121,7 +1121,7 @@ namespace EdenPOS
                     chargeButton.Enabled = false;
                     // El ticket guardado (y sus llaves devueltas) se libera dentro de la misma transacción del cobro; las no devueltas quedan fuera de uso.
                     receipt = AppData.AddReceipt(saleLines, customerBox.Text, dniBox.Text, dialog.PaymentMethod, dialog.AmountReceived, dialog.CashAmount, dialog.YapeAmount, dialog.Discount, dialog.PromotionId,
-                        string.IsNullOrWhiteSpace(loadedSavedTicketId) ? null : loadedSavedTicketId, lossReport);
+                        string.IsNullOrWhiteSpace(loadedSavedTicketId) ? null : loadedSavedTicketId, lossReport, dialog.PendingBalance);   // RN-01: saldo autorizado por la dueña (o null)
                 }
                 catch (AppData.SavedTicketUnavailableException)
                 {
@@ -1176,7 +1176,7 @@ namespace EdenPOS
                     RenderCart();
                     return;
                 }
-                var change = dialog.PaymentMethod == "Efectivo" ? Math.Max(0m, dialog.AmountReceived - receipt.Total) : 0m;
+                var change = dialog.PaymentMethod == "Efectivo" ? Math.Max(0m, dialog.AmountReceived - receipt.PaidAtVisit) : 0m;
                 var hadSavedTicket = !string.IsNullOrWhiteSpace(loadedSavedTicketId);
                 ClearCurrentTicket();
                 if (hadSavedTicket) RefreshSavedTicketsInfo();

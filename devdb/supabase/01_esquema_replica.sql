@@ -180,6 +180,18 @@ CREATE TABLE IF NOT EXISTS edenpos.recibo (
   refund_reason varchar(200) NULL
 );
 
+-- Saldo pendiente autorizado por la dueña, su cobro posterior (RN-01) y hora de ingreso de la visita (RF-17). Idempotente. Por ahora la app
+-- NO replica estas columnas (trabajo local, ver SupabaseReplica.cs); quedan listas con sus valores por defecto.
+ALTER TABLE edenpos.recibo ADD COLUMN IF NOT EXISTS saldo_pendiente numeric(10,2) NOT NULL DEFAULT 0;
+ALTER TABLE edenpos.recibo ADD COLUMN IF NOT EXISTS saldo_autorizado_por varchar(60) NULL;
+ALTER TABLE edenpos.recibo ADD COLUMN IF NOT EXISTS saldo_cobrado_at timestamp without time zone NULL;
+ALTER TABLE edenpos.recibo ADD COLUMN IF NOT EXISTS saldo_cobrado_medio varchar(10) NULL;
+ALTER TABLE edenpos.recibo ADD COLUMN IF NOT EXISTS saldo_cobrado_efectivo numeric(10,2) NOT NULL DEFAULT 0;
+ALTER TABLE edenpos.recibo ADD COLUMN IF NOT EXISTS saldo_cobrado_yape numeric(10,2) NOT NULL DEFAULT 0;
+ALTER TABLE edenpos.recibo ADD COLUMN IF NOT EXISTS saldo_cobrado_por varchar(60) NULL;
+ALTER TABLE edenpos.recibo ADD COLUMN IF NOT EXISTS saldo_id_sesion varchar(32) NULL;
+ALTER TABLE edenpos.recibo ADD COLUMN IF NOT EXISTS ingreso_at timestamp without time zone NULL;
+
 CREATE TABLE IF NOT EXISTS edenpos.recibo_linea (
   id_recibo varchar(32) NOT NULL,
   orden integer NOT NULL,

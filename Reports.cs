@@ -36,6 +36,8 @@ namespace EdenPOS
         public decimal Total { get; set; }
         public decimal Cash { get; set; }
         public decimal Yape { get; set; }
+        // RN-01: parte del total que aún se debe (saldo pendiente sin cobrar).
+        public decimal PendingBalance { get; set; }
     }
 
     public sealed class CategorySalesRow
@@ -59,6 +61,14 @@ namespace EdenPOS
         public decimal AverageTicket { get { return ReceiptCount == 0 ? 0m : Math.Round(TotalSold / ReceiptCount, 2); } }
         public int RefundedCount;
         public decimal RefundedAmount;
+        // RN-01: saldo que aún se debe de las ventas del rango (incluido en TotalSold, pero no cobrado) y saldos cobrados en el rango
+        // (por fecha de pago, aunque la venta sea de otro día; NO suman a TotalSold porque esa venta ya se contó el día de la visita).
+        public decimal PendingBalance;
+        public int PendingCount;
+        public int CollectedCount;
+        public decimal CollectedCash;
+        public decimal CollectedYape;
+        public decimal Collected { get { return CollectedCash + CollectedYape; } }
         public List<PaymentMethodRow> ByPayment = new List<PaymentMethodRow>();
         public List<CategorySalesRow> ByCategory = new List<CategorySalesRow>();
         public List<PromotionSalesRow> Promotions = new List<PromotionSalesRow>();
@@ -141,7 +151,7 @@ namespace EdenPOS
         }
 
         // Ventas del rango. Solo recibos 'Pagado' suman al total; los 'Reembolsado' se cuentan aparte (por fecha de venta).
-        // Efectivo/Yape por medio de pago siguen la definición de Receipt.CashPaid / YapePaid.
+        // Efectivo/Yape por medio de pago siguen la definición de Receipt.CashPaid / YapePaid (solo lo pagado en la visita, RN-01).
         // Por categoría: importe BRUTO (precio_unitario * cantidad, antes de descuentos).
         public static SalesReport GetSalesReport(DateTime desde, DateTime hasta)
         {
@@ -151,8 +161,10 @@ namespace EdenPOS
             {
                 using (var command = new MySqlCommand(
                     "SELECT medio_pago, COUNT(*), COALESCE(SUM(total), 0), " +
-                    "COALESCE(SUM(CASE medio_pago WHEN 'Mixto' THEN monto_efectivo WHEN 'Efectivo' THEN total ELSE 0 END), 0), " +
-                    "COALESCE(SUM(CASE medio_pago WHEN 'Mixto' THEN monto_yape WHEN 'Yape' THEN total ELSE 0 END), 0) " +
+                    "COALESCE(SUM(CASE medio_pago WHEN 'Mixto' THEN monto_efectivo WHEN 'Efectivo' THEN total - saldo_pendiente ELSE 0 END), 0), " +
+                    "COALESCE(SUM(CASE medio_pago WHEN 'Mixto' THEN monto_yape WHEN 'Yape' THEN total - saldo_pendiente ELSE 0 END), 0), " +
+                    "COALESCE(SUM(CASE WHEN saldo_cobrado_at IS NULL THEN saldo_pendiente ELSE 0 END), 0), " +
+                    "COALESCE(SUM(CASE WHEN saldo_cobrado_at IS NULL AND saldo_pendiente > 0 THEN 1 ELSE 0 END), 0) " +
                     "FROM recibo WHERE estado = 'Pagado' AND created_at >= @desde AND created_at < @hasta GROUP BY medio_pago ORDER BY medio_pago", connection))
                 {
                     ReportRange(desde, hasta, command);
@@ -162,11 +174,28 @@ namespace EdenPOS
                             var row = new PaymentMethodRow
                             {
                                 Method = reader.GetString(0), Count = Convert.ToInt32(reader.GetValue(1)), Total = reader.GetDecimal(2),
-                                Cash = reader.GetDecimal(3), Yape = reader.GetDecimal(4)
+                                Cash = reader.GetDecimal(3), Yape = reader.GetDecimal(4), PendingBalance = reader.GetDecimal(5)
                             };
                             report.ByPayment.Add(row);
                             report.ReceiptCount += row.Count;
                             report.TotalSold += row.Total;
+                            report.PendingBalance += row.PendingBalance;
+                            report.PendingCount += Convert.ToInt32(reader.GetValue(6));
+                        }
+                }
+
+                // RN-01: saldos cobrados en el rango (fecha del pago posterior).
+                using (var command = new MySqlCommand(
+                    "SELECT COUNT(*), COALESCE(SUM(saldo_cobrado_efectivo), 0), COALESCE(SUM(saldo_cobrado_yape), 0) FROM recibo " +
+                    "WHERE estado = 'Pagado' AND saldo_cobrado_at >= @desde AND saldo_cobrado_at < @hasta", connection))
+                {
+                    ReportRange(desde, hasta, command);
+                    using (var reader = command.ExecuteReader())
+                        if (reader.Read())
+                        {
+                            report.CollectedCount = Convert.ToInt32(reader.GetValue(0));
+                            report.CollectedCash = reader.GetDecimal(1);
+                            report.CollectedYape = reader.GetDecimal(2);
                         }
                 }
 

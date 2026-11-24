@@ -11,10 +11,10 @@ Punto de venta táctil para Windows del **Sauna El Edén Cono Sur** (Tacna). Pro
 - **Ventas:** catálogo por categorías, variantes, tickets guardados con candados (1–35), adultos/niños, cobro en efectivo, Yape o mixto.
 - **Promociones:** sexta visita gratis y descuento grupal/familiar (configurables, no acumulables).
 - **Comprobantes:** facturación electrónica **simulada** con reintentos; las ventas mayores a S/ 700 exigen el documento del cliente.
-- **Recibos:** búsqueda, detalle, reembolso y resumen por día.
+- **Recibos:** búsqueda, detalle, reembolso, resumen por día y cobro posterior de saldos pendientes (autorizados por la dueña).
 - **Turno y caja:** apertura y cierre, movimientos de caja, efectivo esperado y diferencia.
 - **Inventario:** productos y variantes, entradas, stock mínimo con alerta.
-- **Reportes** de caja, ventas e inventario por rango de fechas, y pantalla de **Auditoría** de operaciones sensibles.
+- **Reportes** de caja, ventas, inventario y visitas por rango de fechas, y pantalla de **Auditoría** de operaciones sensibles.
 - **Usuarios y roles:** la dueña administra; los trabajadores venden. PIN con hash y sal.
 - **Consulta de DNI** opcional (token propio de ApiPeruDev, cifrado con la cuenta de Windows).
 - **Varias cajas** contra la misma base: cobro y liberación de candados en una sola transacción, protección del catálogo y refresco automático de la pantalla cuando otra caja cambia datos.
@@ -89,6 +89,7 @@ la cadena de conexión intente cambiar esas opciones.
 | RN-09 Observación obligatoria si la caja no cuadra | Turno → Cerrar turno, Reportes → Caja y Auditoría | `AppData.CloseShift` (columna `sesion_caja.observacion_cierre`) |
 | RF-06 Registrar cliente (RN-14, RNF-09) | Ventas (DNI, nombre, teléfono y casilla de consentimiento) | `SalesView.cs`, `AppData.SaveCustomer` (DNI y teléfono solo con consentimiento, Ley N.º 29733), `Validation.IsValidPhone` |
 | RF-07 a RF-10 Visita, casilleros, consumos y cobro | Ventas | `SalesView.cs`, `Dialogs.cs`, `AppData.AddReceipt` |
+| RN-01 Pago al terminar la visita; saldo pendiente solo con autorización de la dueña | Cobro (Dejar saldo pendiente: PIN de la dueña y motivo), Recibos (Cobrar saldo y filtro Con saldo pendiente), Reportes y Auditoría | `Dialogs.cs` (`CheckoutDialog`, `PendingBalanceDialog`), `AppData.AddReceipt` (valida dueña, PIN, motivo y pagado + saldo = total), `AppData.CollectBalance` en `Visits.cs`, columnas `recibo.saldo_*` (`devdb/migraciones/008_visitas_saldo.sql`) |
 | RF-20 Visitas activas: tiempo y saldo | Ventas → Tickets guardados | `Dialogs.cs` (`SavedTicketsDialog`, columnas Tiempo y Por cobrar) |
 | RN-12 Reembolsos y ajustes solo de la dueña, con motivo | Recibos → Reembolsar, Inventario → Registrar salida | `AppData.RefundReceipt`, `AppData.AddInventoryAdjustment` |
 | RF-11 Promociones | Cobro y Configuración → Promociones | `Promotions.cs` |
@@ -97,6 +98,7 @@ la cadena de conexión intente cambiar esas opciones.
 | RF-14 a RF-16 Inventario y stock mínimo | Inventario | `ProductsView.cs` |
 | RF-15 Pérdidas, consumo interno y ajustes con motivo | Inventario → Registrar salida, Reportes → Inventario | `ProductsView.cs` (`InventoryAdjustmentDialog`), `AppData.AddInventoryAdjustment` |
 | RF-17 Reportes | Reportes | `Reports.cs`, `ReportsView.cs` |
+| RF-17 Visitas por rango de fechas | Reportes → Visitas | `AppData.GetVisitReport` en `Visits.cs` (visita = ticket guardado o línea SAUNA; personas con `OccupancyCalculator`; duración con `recibo.ingreso_at`), `ReportsView.cs` (grid y CSV) |
 | RF-18 Respaldos | Configuración → Copias de seguridad | `AutoBackup.cs`, `SupabaseReplica.cs` |
 | RF-19, RN-06, RN-07 y RF-22 (cargos por pérdida) Devolución de llaves e implementos | Cobro de un ticket con llaves, Configuración → Cargos por pérdida e Inventario → Editar artículo | `KeyReturns.cs`, `KeyReturnDialog.cs`, `AppData.AddReceipt` (valida los cargos; las llaves no devueltas quedan fuera de uso hasta que la dueña las libera) |
 | RNF-03 Seguridad del PIN | — | `Security.cs` (PBKDF2 con sal) |

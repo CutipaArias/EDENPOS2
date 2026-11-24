@@ -92,14 +92,22 @@ namespace EdenPOS
             if (method == "Efectivo")
             {
                 pair("Recibido", money(receipt.AmountReceived), TicketLineStyle.Normal);
-                pair("Vuelto", money(Math.Max(0m, receipt.AmountReceived - receipt.Total)), TicketLineStyle.Normal);
+                pair("Vuelto", money(Math.Max(0m, receipt.AmountReceived - receipt.PaidAtVisit)), TicketLineStyle.Normal);
             }
             else if (method == "Mixto")
             {
                 pair("Efectivo", money(receipt.CashPaid), TicketLineStyle.Normal);
                 pair("Yape", money(receipt.YapePaid), TicketLineStyle.Normal);
             }
-            else if (method == "Yape") pair("Yape", money(receipt.Total), TicketLineStyle.Normal);
+            else if (method == "Yape") pair("Yape", money(receipt.PaidAtVisit), TicketLineStyle.Normal);
+            // RN-01: saldo pendiente autorizado por la dueña y, si ya se pagó, su cobro posterior.
+            if (receipt.PendingBalance > 0m)
+            {
+                pair("Saldo pendiente", money(receipt.PendingBalance), TicketLineStyle.Normal);
+                if (receipt.BalanceCollectedAt.HasValue)
+                    text("Saldo cobrado el " + receipt.BalanceCollectedAt.Value.ToString("dd/MM/yyyy HH:mm", CultureInfo.InvariantCulture) +
+                         " (" + (receipt.BalanceCollectedMethod ?? "-") + ")", TicketLineStyle.Normal, false);
+            }
 
             if (receipt.Status != null && receipt.Status != "Pagado")
             {

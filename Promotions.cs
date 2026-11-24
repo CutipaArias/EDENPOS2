@@ -57,7 +57,7 @@ namespace EdenPOS
     }
 
     // RN-03. Ciclo: 5 visitas pagadas y la 6ª gratis. Una "visita" es un recibo Pagado del mismo DNI con al menos una línea
-    // de categoría SAUNA. El recibo exonerado (id_promocion_aplicada = 'SEXTA_VISITA') NO cuenta como visita pagada: consume
+    // de categoría SAUNA (un recibo con saldo pendiente, RN-01, sigue en estado Pagado y cuenta como visita). El recibo exonerado (id_promocion_aplicada = 'SEXTA_VISITA') NO cuenta como visita pagada: consume
     // 5 de las visitas pagadas acumuladas. La visita actual es gratis si VisitasPagadas - 5 * VisitasGratis >= 5, así el ciclo es
     // 5 pagadas + 1 gratis (6ª, 12ª, 18ª...) y la 7ª ya se cobra normal. Si la promoción estuvo desactivada, el crédito acumulado
     // (>= 5) se aplica en la siguiente visita. Un recibo reembolsado no cuenta (ni pagado ni gratis). Exonera una unidad de la
