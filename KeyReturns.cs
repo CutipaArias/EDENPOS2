@@ -160,13 +160,40 @@ namespace EdenPOS
                 .Select(x => x.ToString(CultureInfo.InvariantCulture)));
         }
 
+        // LOCK IN SHARE MODE (MariaDB 10.4 y MySQL 8.4; FOR SHARE no existe en MariaDB 10.4): lee el valor confirmado más reciente y espera a un
+        // cobro que esté marcando una llave como perdida, así no se asigna una llave que acaba de quedar fuera de uso.
         // Al asignar llaves a una visita: rechaza las que están fuera de uso (no devueltas y sin liberar por la dueña).
         private static void EnsureLockersInService(MySqlConnection connection, MySqlTransaction transaction, IEnumerable<int> lockers)
         {
-            var outOfService = ReadLockersOutOfService(connection, transaction, false);
+            List<int> outOfService;
+            using (var command = new MySqlCommand("SELECT llaves_fuera_uso FROM configuracion WHERE id = 1 LOCK IN SHARE MODE", connection, transaction))
+            {
+                var raw = command.ExecuteScalar();
+                outOfService = ParseLockerList(raw == null || raw == DBNull.Value ? "" : Convert.ToString(raw, CultureInfo.InvariantCulture));
+            }
             var blocked = (lockers ?? new int[0]).FirstOrDefault(x => outOfService.Contains(x));
             if (blocked > 0)
                 throw new InvalidOperationException("La llave " + blocked + " está fuera de uso porque no se devolvió. La dueña debe liberarla en Configuración > Cargos por pérdida. Seleccione otra.");
+        }
+
+        // Se lanza al cobrar cuando las llaves revisadas en el diálogo de devolución ya no son las del ticket (otra caja las cambió).
+        public sealed class LockersChangedException : InvalidOperationException
+        {
+            public LockersChangedException() : base("Las llaves del ticket cambiaron en otra caja. No se registró el cobro: revise la devolución de nuevo.") { }
+        }
+
+        // RN-06: quitar llaves de un ticket sin cobrarlo (editar sus llaves o eliminarlo) las libera sin confirmar su devolución ni aplicar cargo.
+        // Solo la dueña puede hacerlo y queda en Auditoría. Agregar llaves sigue permitido para todos. "before" son las llaves leídas tras bloquear el ticket.
+        private static void AuthorizeLockerRemoval(MySqlConnection connection, MySqlTransaction transaction, string ticketName, IEnumerable<int> before, IEnumerable<int> after, string how)
+        {
+            var removed = (before ?? new int[0]).Except(after ?? new int[0]).Distinct().OrderBy(x => x).ToList();
+            if (removed.Count == 0) return;
+            var list = string.Join(", ", removed);
+            if (!AppSession.IsOwner)
+                throw new InvalidOperationException("Solo la dueña puede quitar llaves de un ticket sin cobrarlo (" + (removed.Count == 1 ? "llave N.º " : "llaves N.º ") + list + "). " +
+                    "Las llaves se liberan al cobrar la visita, después de confirmar su devolución.");
+            RegistrarAuditoria(connection, transaction, AuditActions.LlavesQuitadas,
+                "Ticket \"" + ticketName + "\": " + (removed.Count == 1 ? "llave N.º " : "llaves N.º ") + list + " quitada(s) sin cobrar (" + how + "). Quedan libres.");
         }
 
         // ---------- Líneas de cargo (RF-19 / RN-07) ----------
@@ -224,10 +251,13 @@ namespace EdenPOS
                 throw new InvalidOperationException("Confirme la devolución de las llaves e implementos antes de cobrar esta visita.");
             report = report ?? new LossReport();
             var lostKeys = report.LostKeys ?? new List<int>();
-            if (lostKeys.Count != lostKeys.Distinct().Count()) throw new ArgumentException("Hay llaves repetidas en la devolución.");
-            var foreign = lostKeys.FirstOrDefault(x => !ticketLockers.Contains(x));
-            if (lostKeys.Any(x => !ticketLockers.Contains(x)))
-                throw new InvalidOperationException("La llave " + foreign + " no pertenece a esta visita.");
+            var returnedKeys = report.ReturnedKeys ?? new List<int>();
+            var reviewed = lostKeys.Concat(returnedKeys).ToList();
+            if (reviewed.Count != reviewed.Distinct().Count()) throw new ArgumentException("Hay llaves repetidas en la devolución (una llave no puede estar devuelta y perdida a la vez).");
+            // RN-06: las llaves revisadas (devueltas + perdidas) deben ser EXACTAMENTE las del ticket, leídas con bloqueo. Si otra caja agregó o quitó
+            // una llave mientras el diálogo estaba abierto, ninguna se libera sin que alguien confirme su devolución.
+            if (!new HashSet<int>(reviewed).SetEquals(ticketLockers))
+                throw new LockersChangedException();
             foreach (var group in GroupImplements(report))
             {
                 if (group.Quantity <= 0) throw new ArgumentException("La cantidad de implementos no devueltos debe ser mayor que cero.");

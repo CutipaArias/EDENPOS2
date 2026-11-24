@@ -1029,7 +1029,7 @@ namespace EdenPOS
                 .SelectMany(AppData.GetTicketLockers)
                 .Distinct()
                 .ToList();
-            using (var dialog = new LockerSelectionDialog(occupied, AppData.GetTicketLockers(ticket), AppData.LockersOutOfService))
+            using (var dialog = new LockerSelectionDialog(occupied, AppData.GetTicketLockers(ticket), AppData.LockersOutOfService, AppSession.IsOwner ? null : AppData.GetTicketLockers(ticket)))
             {
                 if (dialog.ShowDialog(FindForm()) != DialogResult.OK) return;
                 try
@@ -1137,6 +1137,21 @@ namespace EdenPOS
                         loadedLockerNumbers.Clear();
                         RenderCart();
                     }
+                    RefreshSavedTicketsInfo();
+                    return;
+                }
+                catch (AppData.LockersChangedException ex)
+                {
+                    // RN-06: otra caja cambió las llaves del ticket mientras se revisaba la devolución. Se recargan y se pide revisar de nuevo.
+                    chargeButton.Enabled = true;
+                    try
+                    {
+                        var current = AppData.SavedTickets.FirstOrDefault(x => x.Id == loadedSavedTicketId);
+                        if (current != null) loadedLockerNumbers = AppData.GetTicketLockers(current);
+                    }
+                    catch (MySqlConnector.MySqlException dbEx) { AppData.LogError(dbEx, "Recargar llaves del ticket"); }
+                    Theme.Message(FindForm(), Tone.Warning, ex.Message + "\nLlaves actuales: " + (loadedLockerNumbers.Count == 0 ? "ninguna" : string.Join(", ", loadedLockerNumbers)) + ".", "No se pudo cobrar");
+                    RenderCart();
                     RefreshSavedTicketsInfo();
                     return;
                 }

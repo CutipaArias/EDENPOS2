@@ -410,6 +410,7 @@ namespace EdenPOS
         private readonly int adultCount;
         private readonly int childCount;
         private readonly string editingTicketId;
+        private readonly List<int> originalLockers;
         public string TicketName { get { return nameBox.Text.Trim(); } }
         public List<int> LockerNumbers { get; private set; } = new List<int>();
         public int AdultCount { get { return adultCount; } }
@@ -426,6 +427,7 @@ namespace EdenPOS
             adultCount = Math.Max(0, Math.Min(999, suggestedAdults));
             childCount = Math.Max(0, Math.Min(999, suggestedChildren));
             LockerNumbers = (initialLockers ?? Enumerable.Empty<int>()).Distinct().OrderBy(x => x).ToList();
+            originalLockers = string.IsNullOrWhiteSpace(currentTicketId) ? new List<int>() : LockerNumbers.ToList();
             var updating = !string.IsNullOrWhiteSpace(editingTicketId);
             DialogKit.Prepare(this, updating ? "Actualizar ticket" : "Guardar ticket", 540, 420);
 
@@ -467,7 +469,7 @@ namespace EdenPOS
                 .SelectMany(AppData.GetTicketLockers)
                 .Distinct()
                 .ToList();
-            using (var dialog = new LockerSelectionDialog(occupied, LockerNumbers, AppData.LockersOutOfService))
+            using (var dialog = new LockerSelectionDialog(occupied, LockerNumbers, AppData.LockersOutOfService, AppSession.IsOwner ? null : originalLockers))
             {
                 if (dialog.ShowDialog(this) != DialogResult.OK) return;
                 LockerNumbers = dialog.SelectedLockers.ToList();
@@ -575,12 +577,16 @@ namespace EdenPOS
     public sealed class LockerSelectionDialog : Form
     {
         private readonly HashSet<int> selected = new HashSet<int>();
+        private readonly HashSet<int> locked = new HashSet<int>();
         private readonly Label selectionLabel;
         public List<int> SelectedLockers { get { return selected.OrderBy(x => x).ToList(); } }
 
         public LockerSelectionDialog(System.Collections.Generic.IEnumerable<int> occupiedLockers, System.Collections.Generic.IEnumerable<int> selectedLockers = null,
-            System.Collections.Generic.IEnumerable<int> outOfServiceLockers = null)
+            System.Collections.Generic.IEnumerable<int> outOfServiceLockers = null,
+            System.Collections.Generic.IEnumerable<int> lockedLockers = null)
         {
+            // RN-06: llaves ya asignadas que este usuario no puede quitar (solo la dueña quita llaves sin cobrar; AppData lo vuelve a validar).
+            locked.UnionWith(lockedLockers ?? new int[0]);
             DialogKit.Prepare(this, "Seleccionar candado", 740, 600);
             var occupied = new System.Collections.Generic.HashSet<int>(occupiedLockers ?? new int[0]);
             // RN-06: llaves no devueltas que la dueña aún no liberó.
@@ -637,6 +643,11 @@ namespace EdenPOS
         private void ToggleLocker(object sender, EventArgs e)
         {
             var tile = (LockerTile)sender;
+            if (selected.Contains(tile.Number) && locked.Contains(tile.Number))
+            {
+                Theme.Message(this, Tone.Info, "Solo la dueña puede quitar la llave " + tile.Number + " de un ticket sin cobrarlo. La llave se libera al cobrar la visita, después de confirmar su devolución.", "Quitar llave");
+                return;
+            }
             if (selected.Contains(tile.Number)) { selected.Remove(tile.Number); tile.State = LockerState.Free; }
             else { selected.Add(tile.Number); tile.State = LockerState.Selected; }
             UpdateSelectionLabel();
@@ -931,10 +942,21 @@ namespace EdenPOS
         {
             var ticket = Current();
             if (ticket == null) return;
+            if (!AppSession.IsOwner && AppData.GetTicketLockers(ticket).Count > 0)
+            {
+                Theme.Message(this, Tone.Info, "Solo la dueña puede eliminar un ticket con llaves asignadas. Cobre la visita para confirmar la devolución de las llaves.", "Tickets guardados");
+                return;
+            }
             if (MessageBox.Show("¿Eliminar el ticket guardado ‘" + ticket.Name + "’?", "Tickets guardados", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
             try
             {
                 AppData.DeleteSavedTicket(ticket.Id);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException || ex is ArgumentException)
+            {
+                Theme.Message(this, Tone.Warning, ex.Message, "Tickets guardados");
+                LoadTickets();
+                return;
             }
             catch (MySqlConnector.MySqlException ex)
             {
@@ -959,7 +981,7 @@ namespace EdenPOS
                 .SelectMany(AppData.GetTicketLockers)
                 .Distinct()
                 .ToList();
-            using (var dialog = new LockerSelectionDialog(occupied, AppData.GetTicketLockers(ticket), AppData.LockersOutOfService))
+            using (var dialog = new LockerSelectionDialog(occupied, AppData.GetTicketLockers(ticket), AppData.LockersOutOfService, AppSession.IsOwner ? null : AppData.GetTicketLockers(ticket)))
             {
                 if (dialog.ShowDialog(this) != DialogResult.OK) return;
                 try

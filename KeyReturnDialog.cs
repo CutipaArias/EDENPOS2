@@ -124,6 +124,7 @@ namespace EdenPOS
         {
             var report = new LossReport();
             report.LostKeys.AddRange(keyRows.Where(x => !x.Returned.Checked).Select(x => x.Locker));
+            report.ReturnedKeys.AddRange(keyRows.Where(x => x.Returned.Checked).Select(x => x.Locker));   // el servidor exige devueltas + perdidas = llaves del ticket
             foreach (var row in implementRows.Where(x => !x.Returned.Checked))
                 report.LostImplements.Add(new LostImplement
                 {

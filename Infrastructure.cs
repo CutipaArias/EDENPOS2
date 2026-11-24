@@ -947,7 +947,7 @@ namespace EdenPOS
                     }
                     var ticketLockers = new List<int>();
                     if (hasSavedTicket)
-                        using (var command = new MySqlCommand("SELECT numero FROM casillero_llave WHERE id_ticket = @id ORDER BY numero", connection, transaction))
+                        using (var command = new MySqlCommand("SELECT numero FROM casillero_llave WHERE id_ticket = @id ORDER BY numero FOR UPDATE", connection, transaction))
                         {
                             command.Parameters.AddWithValue("@id", savedTicketId);
                             using (var reader = command.ExecuteReader())
@@ -1177,10 +1177,12 @@ namespace EdenPOS
                     using (var connection = SqlConnectionFactory.Open())
                     using (var transaction = connection.BeginTransaction())
                     {
+                        // Orden de bloqueo igual que AddReceipt: primero configuracion (llaves fuera de uso), después el ticket.
+                        EnsureLockersInService(connection, transaction, selectedLockers);   // RN-06: no se asignan llaves no devueltas
                         LockSavedTicket(connection, transaction, id);
                         ticket = LoadSavedTicketsFromDb(connection, transaction, id).FirstOrDefault();
                         if (ticket == null) throw new InvalidOperationException("El ticket guardado ya no existe.");
-                        EnsureLockersInService(connection, transaction, selectedLockers);   // RN-06: no se asignan llaves no devueltas
+                        AuthorizeLockerRemoval(connection, transaction, ticket.Name, GetTicketLockers(ticket), selectedLockers, "al actualizar el ticket");   // RN-06
                         var duplicated = FindOccupiedLocker(connection, transaction, id, selectedLockers);
                         if (duplicated > 0) throw new InvalidOperationException("La llave " + duplicated + " ya está ocupada. Seleccione otra.");
 
@@ -1252,12 +1254,13 @@ namespace EdenPOS
                     using (var connection = SqlConnectionFactory.Open())
                     using (var transaction = connection.BeginTransaction())
                     {
-                        // Orden de bloqueo padre -> hijos (igual que AddReceipt): primero la fila de ticket_guardado.
+                        // Orden de bloqueo igual que AddReceipt: configuracion (llaves fuera de uso), después ticket_guardado (padre) y sus hijos.
+                        EnsureLockersInService(connection, transaction, selectedLockers);   // RN-06: no se asignan llaves no devueltas
                         LockSavedTicket(connection, transaction, id);
                         var ticket = LoadSavedTicketsFromDb(connection, transaction, id).FirstOrDefault();
                         if (ticket == null) throw new InvalidOperationException("El ticket guardado ya no existe.");
+                        AuthorizeLockerRemoval(connection, transaction, ticket.Name, GetTicketLockers(ticket), selectedLockers, "al editar las llaves");   // RN-06
 
-                        EnsureLockersInService(connection, transaction, selectedLockers);   // RN-06: no se asignan llaves no devueltas
                         var duplicated = FindOccupiedLocker(connection, transaction, id, selectedLockers);
                         if (duplicated > 0) throw new InvalidOperationException("La llave " + duplicated + " ya está ocupada. Seleccione otra.");
 
@@ -1289,6 +1292,9 @@ namespace EdenPOS
                 {
                     // Orden de bloqueo padre -> hijos (igual que AddReceipt): primero la fila de ticket_guardado.
                     LockSavedTicket(connection, transaction, id);
+                    // RN-06: eliminar un ticket con llaves las libera sin cobrar: solo la dueña, y queda en Auditoría.
+                    var existing = LoadSavedTicketsFromDb(connection, transaction, id).FirstOrDefault();
+                    if (existing != null) AuthorizeLockerRemoval(connection, transaction, existing.Name, GetTicketLockers(existing), null, "ticket eliminado");
                     DeleteTicketChildren(connection, transaction, id);
                     Execute(connection, transaction, "DELETE FROM ticket_guardado WHERE id_ticket = @id",
                         new Dictionary<string, object> { { "@id", id ?? "" } });
@@ -2646,7 +2652,11 @@ namespace EdenPOS
                     for (var index = 0; index < reader.FieldCount; index++)
                     {
                         var name = reader.GetName(index);
-                        // El bloqueo de cuentas (RF-01) es local: no va en la copia (así se puede importar en versiones anteriores y no se reimponen bloqueos viejos).
+                        // El bloqueo de cuentas (RF-01) es estado local de seguridad: no va en la copia, así al restaurar no se reimponen bloqueos viejos.
+                        // Las demás columnas nuevas (p. ej. cliente.telefono, producto.cargo_perdida, sesion_caja.observacion_cierre,
+                        // configuracion.cargo_perdida_llave) son datos del negocio y SÍ van: por eso una copia nueva no se puede restaurar en una
+                        // versión anterior de Edén POS (la restauración rechaza columnas desconocidas). Al revés sí: una copia antigua se restaura
+                        // aquí y las columnas que le faltan toman su valor por defecto.
                         if (table == "usuario" && (name == "intentos_fallidos" || name == "bloqueado_en")) continue;
                         var value = reader.GetValue(index);
                         if (table == "configuracion" && name == "dni_api_token_protected") value = "";

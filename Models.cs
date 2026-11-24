@@ -44,13 +44,16 @@ namespace EdenPOS
         public const string ImplementoPerdido = "IMPLEMENTO_PERDIDO";
         public const string LlaveLiberada = "LLAVE_LIBERADA";
         public const string CargoPerdidaCambiado = "CARGO_PERDIDA_CAMBIADO";
+        public const string LlavesQuitadas = "LLAVES_QUITADAS";
     }
 
     // RF-19: resultado de la devolución de llaves e implementos al cobrar una visita (ticket guardado con llaves).
-    // Solo lista lo que NO se devolvió; AppData.BuildLossChargeLines arma las líneas de cargo con los montos configurados.
+    // LostKeys + ReturnedKeys deben ser EXACTAMENTE las llaves del ticket (AddReceipt lo comprueba con las filas bloqueadas): así una llave que
+    // otra caja agregó mientras el diálogo estaba abierto no se libera sin revisarla. AppData.BuildLossChargeLines arma los cargos de lo no devuelto.
     public sealed class LossReport
     {
         public List<int> LostKeys { get; set; } = new List<int>();
+        public List<int> ReturnedKeys { get; set; } = new List<int>();
         public List<LostImplement> LostImplements { get; set; } = new List<LostImplement>();
 
         [ScriptIgnore]
