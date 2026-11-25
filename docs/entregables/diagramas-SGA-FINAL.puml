@@ -1,0 +1,25 @@
+' Figura 1 del FD05: Diagrama de Gantt del proyecto SGA (Sauna El Edén Cono Sur)
+' Fechas: línea base del FD06; "today" marca el estado al 25/11/2026.
+@startgantt
+printscale weekly
+Project starts 2026-08-17
+saturday are closed
+sunday are closed
+[Inicio y levantamiento] starts 2026-08-17 and ends 2026-08-28
+[Requerimientos y factibilidad] starts 2026-08-24 and ends 2026-09-11
+[Diseño y pruebas técnicas tempranas] starts 2026-09-07 and ends 2026-10-02
+[Seguridad, configuración y caja] starts 2026-09-21 and ends 2026-10-16
+[Atención, cobro e inventario] starts 2026-10-05 and ends 2026-11-06
+[Comprobantes, reportes y respaldo] starts 2026-10-26 and ends 2026-11-20
+[Pruebas integrales y correcciones] starts 2026-11-09 and ends 2026-11-25
+[Instalación, piloto y capacitación] starts 2026-11-23 and ends 2026-11-30
+[Entrega y aceptación] starts 2026-12-01 and ends 2026-12-02
+[H1 Alcance y requisitos] happens 2026-09-11
+[H2 Diseño de solución] happens 2026-10-02
+[H3 Base de operación] happens 2026-10-16
+[H4 Atención integrada] happens 2026-11-06
+[H5 Integraciones completas] happens 2026-11-20
+[H6 Piloto y capacitación] happens 2026-11-30
+[H7 Entrega final] happens 2026-12-02
+today is 2026-11-25 and is colored in #AAF
+@endgantt
