@@ -31,6 +31,7 @@ internal static class RegressionChecks
             CheckCashRegisterDatabase();
             CheckComprobantesTipoConsentimientoDatabase();
             CheckPendingBalanceAndVisitsDatabase();
+            CheckPerformanceDatabase();
             Console.WriteLine("Correcto: " + checks + " comprobaciones.");
             return 0;
         }
@@ -1200,6 +1201,118 @@ internal static class RegressionChecks
             }
             finally
             {
+                Environment.SetEnvironmentVariable("EDENPOS_MYSQL_CONNECTION", originalConnection);
+                MySqlConnection.ClearAllPools();
+                Execute(admin, "DROP DATABASE `" + database + "`");
+            }
+        }
+    }
+
+    // RNF-01 (registrar visita, consumo o pago en 2 s o menos) y RNF-05 (restaurar una copia en 15 min o menos), medidos sobre una base temporal.
+    private static void CheckPerformanceDatabase()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("EDENPOS_TEST_MYSQL_CONNECTION");
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            Console.WriteLine("SQL omitido: configure EDENPOS_TEST_MYSQL_CONNECTION para medir RNF-01 y RNF-05.");
+            return;
+        }
+        var builder = new MySqlConnectionStringBuilder(connectionString);
+        var database = "edenpos_test_" + Guid.NewGuid().ToString("N");
+        builder.Database = "";
+        var originalConnection = Environment.GetEnvironmentVariable("EDENPOS_MYSQL_CONNECTION");
+        const int historicReceipts = 20000;
+        using (var admin = new MySqlConnection(builder.ConnectionString))
+        {
+            admin.Open();
+            Execute(admin, "CREATE DATABASE `" + database + "` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci");
+            var backup = Path.Combine(Path.GetTempPath(), "EdenPOS-rnf-" + Guid.NewGuid().ToString("N") + ".edenbackup");
+            try
+            {
+                builder.Database = database;
+                builder.AllowUserVariables = true;
+                using (var connection = new MySqlConnection(builder.ConnectionString))
+                {
+                    connection.Open();
+                    var schema = File.ReadAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "schema.sql"));
+                    Execute(connection, schema.Substring(schema.IndexOf("CREATE TABLE rol", StringComparison.Ordinal)));
+                    // Historial de unos dos años de ventas para que las mediciones no se hagan sobre una base vacía.
+                    var start = new DateTime(2024, 1, 1, 9, 0, 0);
+                    for (var offset = 0; offset < historicReceipts; offset += 1000)
+                    {
+                        var receipts = new StringBuilder("INSERT INTO recibo (id_recibo, numero, created_at, empleado, cliente_nombre, medio_pago, monto_recibido, monto_efectivo, monto_yape, total, estado) VALUES ");
+                        var lines = new StringBuilder("INSERT INTO recibo_linea (id_recibo, orden, nombre, precio_unitario, cantidad) VALUES ");
+                        for (var i = offset; i < offset + 1000; i++)
+                        {
+                            var id = "h" + i.ToString("D31");
+                            var at = start.AddMinutes(i * 50).ToString("yyyy-MM-dd HH:mm:ss");
+                            if (i > offset) { receipts.Append(','); lines.Append(','); }
+                            receipts.Append("('" + id + "'," + (100000 + i) + ",'" + at + "','Historial','Cliente " + i + "','Efectivo',48,48,0,48,'Pagado')");
+                            lines.Append("('" + id + "',0,'AMIGOS X3',48,1)");
+                        }
+                        Execute(connection, receipts.ToString());
+                        Execute(connection, lines.ToString());
+                    }
+                }
+                Environment.SetEnvironmentVariable("EDENPOS_MYSQL_CONNECTION", builder.ConnectionString);
+                AppData.Initialize();
+                var owner = AppData.Users.First(u => u.Role == UserRoles.Owner && u.Active);
+                var login = AppData.TryLogin(owner.Id, "0000");
+                Check(login.Outcome == AppData.LoginOutcome.Success, "RNF: debe iniciar sesión la dueña de la base de prueba.");
+                AppSession.SignIn(login.User);
+                try
+                {
+                    AppData.OpenNewShift(100m);
+                    var sauna = AppData.Products.First(p => p.Category == "SAUNA" && p.Name == "AMIGOS X3");
+                    Func<List<ReceiptLine>> saunaLines = () => new List<ReceiptLine> { new ReceiptLine { ProductId = sauna.Id, Name = sauna.Name, UnitPrice = sauna.Price, Quantity = 1 } };
+                    var visitTimes = new List<double>();
+                    var paymentTimes = new List<double>();
+                    var balanceTimes = new List<double>();
+                    var clock = new System.Diagnostics.Stopwatch();
+                    for (var i = 0; i < 25; i++)
+                    {
+                        // Visita y consumo: se guarda el ticket de la visita en curso con lo que consume el cliente.
+                        clock.Restart();
+                        var ticket = AppData.SaveTicket(saunaLines(), "Cliente " + i, "", "Cliente " + i, 1);
+                        visitTimes.Add(clock.Elapsed.TotalMilliseconds);
+                        // Pago: se cobra el ticket y se emite el recibo.
+                        clock.Restart();
+                        AppData.AddReceipt(saunaLines(), "Cliente " + i, "", "Efectivo", sauna.Price, savedTicketId: ticket.Id,
+                            lossReport: new LossReport { ReturnedKeys = new List<int> { 1 } });
+                        paymentTimes.Add(clock.Elapsed.TotalMilliseconds);
+                    }
+                    for (var i = 0; i < 5; i++)
+                    {
+                        var pending = AppData.AddReceipt(saunaLines(), "Deuda " + i, "", "Efectivo", sauna.Price - 10m,
+                            pendingBalance: new PendingBalanceAuthorization { Amount = 10m, OwnerUserId = owner.Id, OwnerPin = "0000", Reason = "Medición RNF-01" });
+                        clock.Restart();
+                        AppData.CollectBalance(pending.Id, "Yape", 10m);
+                        balanceTimes.Add(clock.Elapsed.TotalMilliseconds);
+                    }
+                    Func<List<double>, string> describe = times => "promedio " + times.Average().ToString("0") + " ms, máximo " + times.Max().ToString("0") + " ms";
+                    Console.WriteLine("RNF-01 con " + historicReceipts + " recibos de historial: visita y consumo " + describe(visitTimes) +
+                                      "; pago " + describe(paymentTimes) + "; cobro de saldo " + describe(balanceTimes) + ".");
+                    Check(visitTimes.Max() <= 2000 && paymentTimes.Max() <= 2000 && balanceTimes.Max() <= 2000, "RNF-01: cada registro debe tardar 2 s o menos.");
+
+                    clock.Restart();
+                    var exported = AppData.ExportBackup(backup);
+                    var exportTime = clock.Elapsed;
+                    clock.Restart();
+                    var restored = AppData.ImportBackup(backup);
+                    var restoreTime = clock.Elapsed;
+                    Console.WriteLine("RNF-05: copia de " + exported + " filas en " + exportTime.TotalSeconds.ToString("0.0") + " s; restauración de " + restored +
+                                      " filas en " + restoreTime.TotalSeconds.ToString("0.0") + " s.");
+                    Check(restored == exported && AppData.Receipts.Count == historicReceipts + 30, "RNF-05: la restauración debe recuperar todas las filas.");
+                    Check(restoreTime.TotalMinutes <= 15, "RNF-05: restaurar la copia debe tardar 15 min o menos.");
+                }
+                finally
+                {
+                    AppSession.SignOut();
+                }
+            }
+            finally
+            {
+                if (File.Exists(backup)) File.Delete(backup);
                 Environment.SetEnvironmentVariable("EDENPOS_MYSQL_CONNECTION", originalConnection);
                 MySqlConnection.ClearAllPools();
                 Execute(admin, "DROP DATABASE `" + database + "`");

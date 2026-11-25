@@ -111,6 +111,32 @@ la cadena de conexión intente cambiar esas opciones.
 | RNF-04 Trazabilidad | Auditoría | `AuditView.cs`, `AppData.RegistrarAuditoria` (todo cierre de caja queda como `CAJA_CERRADA` con esperado y contado de efectivo y Yape; si no cuadra, además `CAJA_DIFERENCIA`) |
 | RNF-09 / RN-14 Retiro del consentimiento y protección de datos | Configuración → Clientes → Buscar cliente → Retirar consentimiento (solo la dueña) | `CustomerPrivacy.cs`, `CustomerPrivacyDialog.cs`: borra el teléfono y anonimiza el DNI (los recibos mayores a S/ 700 lo conservan por SUNAT), columna `cliente.consentimiento_revocado`, auditoría `CONSENTIMIENTO_RETIRADO`; la exportación manual de copias queda como `DATOS_EXPORTADOS` y la importación de datos antiguos no guarda clientes sin consentimiento |
 
+## Rendimiento medido (RNF-01, RNF-05, RNF-06)
+
+Las mediciones de RNF-01 y RNF-05 están en `CheckPerformanceDatabase` (`devdb/tests/RegressionChecks.cs`) y se repiten cada vez que se corren las pruebas con `EDENPOS_TEST_MYSQL_CONNECTION`. La prueba crea una base temporal con 20 000 recibos de historial (unos dos años de ventas) y falla si se pasa del límite. Resultado del 25/11/2026 en la laptop de desarrollo (MySQL 8.4 local):
+
+| Requerimiento | Límite del FD03 | Medido |
+|---|---|---|
+| RNF-01 Registrar visita y consumo (guardar el ticket con su llave) | 2 s | 9 ms en promedio, 24 ms como máximo (25 registros) |
+| RNF-01 Registrar el pago (cobrar el ticket y emitir el recibo) | 2 s | 13 ms en promedio, 70 ms como máximo (25 cobros) |
+| RNF-01 Cobrar un saldo pendiente | 2 s | 12 ms en promedio, 14 ms como máximo (5 cobros) |
+| RNF-05 Restaurar una copia de seguridad | 15 min | 18,7 s para 40 184 filas (la copia se generó en 1,2 s) |
+
+Los tiempos medidos son los de la base de datos y la lógica de `AppData`; el dibujo de la pantalla se suma, pero es del orden de milisegundos.
+
+RNF-06 (registrar una visita en menos de 1 minuto y en no más de 3 pantallas) se cumple por diseño:
+
+1. **Ventas**: se toca el servicio (por ejemplo, SAUNA → AMIGOS X3) y, si corresponde, se escribe el DNI.
+2. **Guardar ticket**: se elige la llave y se confirma el número de adultos y niños.
+
+La visita queda registrada en 2 pantallas. Al salir, el cobro usa Ventas → Tickets guardados → Cobrar (devolución de llaves y medio de pago) → Venta completada. El minuto no se midió con cronómetro: conviene medirlo en vivo en la sustentación.
+
+## Diferencias con el FD03
+
+- **RNF-08 (ASP.NET Core y patrón Repositorio):** EdenPOS es una aplicación de escritorio WinForms (.NET Framework 4.8). El acceso a datos está centralizado en la fachada `AppData`, que cumple el mismo papel que los repositorios: las pantallas no escriben SQL.
+- **RNF-07 (funcionar en Chrome y Edge):** no aplica a una aplicación de escritorio. Sí se cumple la parte de impresión en la térmica de 80 mm.
+- **RF-12 (boleta electrónica):** el envío a SUNAT es **simulado**. No hay credenciales de SUNAT ni de un OSE, y `IEmisorElectronico` permite conectar un emisor real más adelante sin tocar el resto del sistema.
+
 ## Capturas
 
 ![Pantalla de venta](docs/img/Preview.png)

@@ -85,23 +85,21 @@ namespace EdenPOS
             toDate.ValueChanged += (s, e) => LoadReceipts();
             var filters = new TableLayoutPanel
             {
-                Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 4, RowCount = 2,
+                Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 2, RowCount = 3,
                 BackColor = Theme.Surface, Margin = new Padding(0), Padding = new Padding(Theme.Space.Xs, Theme.Space.Xs, Theme.Space.Xs, Theme.Space.Sm)
             };
+            // Una fecha por fila: en ventanas angostas los dos selectores lado a lado quedaban cortados.
             filters.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            filters.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
-            filters.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            filters.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
+            filters.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
             filters.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             filters.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            var statusField = FilterField(statusFilter);
+            filters.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             filters.Controls.Add(FilterLabel("Envío de boleta"), 0, 0);
-            filters.Controls.Add(statusField, 1, 0);
-            filters.SetColumnSpan(statusField, 3);
+            filters.Controls.Add(FilterField(statusFilter), 1, 0);
             filters.Controls.Add(FilterLabel("Desde"), 0, 1);
             filters.Controls.Add(FilterField(fromDate), 1, 1);
-            filters.Controls.Add(FilterLabel("Hasta"), 2, 1);
-            filters.Controls.Add(FilterField(toDate), 3, 1);
+            filters.Controls.Add(FilterLabel("Hasta"), 0, 2);
+            filters.Controls.Add(FilterField(toDate), 1, 2);
             listHost.Controls.Add(filters);
             content.Controls.Add(listHost, 0, 0);
 
