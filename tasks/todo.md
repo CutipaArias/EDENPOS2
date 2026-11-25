@@ -1,6 +1,9 @@
 # To-do: Completar EdenPOS
 
-Ver `tasks/plan.md` para contexto completo de cada tarea. Verificación en todas: `dotnet build` en `C:\Users\Braya\PR lap\GPTI\EdenPOS\EdenPOS.csproj` (no hay proyecto de pruebas automatizadas) + el paso manual descrito en cada tarea.
+Ver `tasks/plan.md` para contexto completo de cada tarea. Verificación en todas, desde la raíz del repositorio:
+1. `dotnet build EdenPOS.csproj -c Release`.
+2. Pruebas de regresión: `dotnet build devdb\tests\RegressionChecks.csproj -c Release`, luego `.\devdb\tests\bin\Release\net48\RegressionChecks.exe` con `EDENPOS_TEST_MYSQL_CONNECTION` definida. Deben terminar con "Correcto: 309 comprobaciones."
+3. El paso manual descrito en cada tarea.
 
 ## Phase 0: Preparación
 - [x] 0.1 Instalar MySQL 8.4.9 local y crear base `edenpos` con el esquema (puerto 3306, dev-only, sin contraseña de root)
@@ -17,7 +20,10 @@ Ver `tasks/plan.md` para contexto completo de cada tarea. Verificación en todas
 - [x] 1.9 Rediseñar copia de seguridad (exportar/restaurar) para datos en MySQL — hoy ya no cubre productos ni inventario y restaurar una copia nueva falla (hecho: copia v2 sobre MySQL; compila, sin probar en la UI)
 
 ### Checkpoint 1
-- [ ] Build limpio, las 7 pantallas existentes funcionan 100% contra MySQL
+- [x] Build limpio (2026-11-25)
+- [x] Orden de variantes y desempate de movimientos del mismo segundo (resueltos en el código)
+- [ ] Las 7 pantallas existentes funcionan 100% contra MySQL (prueba manual)
+- [ ] Antes de usar la app en el sauna: usuario de MySQL propio en lugar de `root` sin contraseña, y cambiar el PIN `0000` de DUEÑA
 - [ ] Revisado con el usuario
 
 ## Phase 2: funcionalidad documentada faltante
@@ -27,7 +33,8 @@ Ver `tasks/plan.md` para contexto completo de cada tarea. Verificación en todas
 - [x] 2.4 Stock mínimo por producto (probado por reflexión; UI sin probar)
 
 ### Checkpoint 2
-- [ ] Build limpio, los 4 flujos verificados manualmente
+- [x] Build limpio (2026-11-25)
+- [ ] Los 4 flujos verificados manualmente
 - [ ] Revisado con el usuario
 
 ## Phase 3: reports
@@ -37,7 +44,8 @@ Ver `tasks/plan.md` para contexto completo de cada tarea. Verificación en todas
 - [x] 3.4 Pantalla de Auditoría (independiente) (probado por reflexión; UI sin probar)
 
 ### Checkpoint 3
-- [ ] Build limpio, reportes y auditoría muestran datos correctos
+- [x] Build limpio (2026-11-25)
+- [ ] Reportes y auditoría muestran datos correctos (prueba manual)
 
 ## Phase 4: design-pass (paralelo)
 - [x] 4.1 Escala tipográfica en Theme.cs (escala definida; aún sin usar en pantallas)
@@ -71,3 +79,7 @@ Ver `tasks/plan.md` para contexto completo de cada tarea. Verificación en todas
 - [x] Configuración → Réplica en Supabase; scripts `devdb/supabase/01_esquema_replica.sql`, `02_vaciar_replica.sql` y `LEEME.md`
 - [x] Revisión y correcciones (probado con destino simulado y MySQL 3307)
 - [ ] Prueba del usuario con su proyecto Supabase real (script, conexión, primera subida, restaurar en base limpia, API pública sin acceso)
+
+## Estado (2026-11-25)
+- Código completo: sin issues ni pull requests abiertos en GitHub; build limpio y "Correcto: 309 comprobaciones." con el MariaDB 10.4.32 de XAMPP.
+- Lo que falta son las casillas sin marcar de arriba: pruebas manuales en la interfaz (checkpoints, escala de Windows 125-150 %, dos cajas, copia en una carpeta real, Supabase real) y la preparación para usar la app en el sauna.
