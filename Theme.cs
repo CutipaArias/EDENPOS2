@@ -57,8 +57,11 @@ namespace EdenPOS
     //   Separador ........ Theme.Separator()  (1 px, color Divider; vertical: Theme.Separator(true)).
     //   Etiquetas ........ Mayuscula inicial y especificas ("Registrar entrada", "Guardar cambios"); los nombres de producto van tal cual.
     //
-    // MOVIMIENTO: no hay animaciones. Respuesta inmediata al presionar (EdenButton repinta en MouseDown). Si alguna pantalla añade una
-    // transicion minima, debe consultar Theme.UseMotion (= SystemInformation.UIEffectsEnabled) y no animar cuando sea false.
+    // MOVIMIENTO (Motion.cs): breve, con proposito y opcional. Presionar sigue siendo inmediato (EdenButton repinta en MouseDown).
+    //   Hover de botones, chips, tarjetas y barra lateral: fundido Motion.Fast (HoverFade) · indicador de la barra lateral: crece al
+    //   activarse (Motion.Normal) · linea del carrito agregada o aumentada: resaltado que se desvanece (Motion.Flash) · PIN incorrecto:
+    //   la tarjeta de inicio de sesion oscila. Todo usa Motion.Animate, que respeta Theme.UseMotion (= SystemInformation.UIEffectsEnabled)
+    //   y salta al estado final cuando es false. Ninguna animacion bloquea ni es la unica señal: el texto o el valor ya cambiaron.
     // =====================================================================================================================
     public static class Theme
     {

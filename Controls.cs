@@ -61,9 +61,11 @@ namespace EdenPOS
         private ButtonVariant variant = ButtonVariant.Secondary;
         private bool hover, pressed;
         private Color? fillOverride, foreOverride;
+        private readonly HoverFade hoverFade;
 
         public EdenButton()
         {
+            hoverFade = new HoverFade(this);
             SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
             FlatStyle = FlatStyle.Flat;
             FlatAppearance.BorderSize = 0;
@@ -134,19 +136,22 @@ namespace EdenPOS
                     default: return Theme.SoftPressed;
                 }
             }
-            if (hover)
+            var rest = fillOverride ?? VariantFill();
+            var amount = hoverFade == null ? (hover ? 1 : 0) : hoverFade.Value;
+            return amount <= 0 ? rest : Theme.Blend(rest, HoverFill(), amount);   // hover: fundido breve (Motion.Fast)
+        }
+
+        private Color HoverFill()
+        {
+            if (!FlatAppearance.MouseOverBackColor.IsEmpty) return FlatAppearance.MouseOverBackColor;
+            if (fillOverride.HasValue) return Shift(fillOverride.Value, 1);
+            switch (variant)
             {
-                if (!FlatAppearance.MouseOverBackColor.IsEmpty) return FlatAppearance.MouseOverBackColor;
-                if (fillOverride.HasValue) return Shift(fillOverride.Value, 1);
-                switch (variant)
-                {
-                    case ButtonVariant.Primary: return Theme.PrimaryHover;
-                    case ButtonVariant.Destructive: return Theme.DangerHover;
-                    case ButtonVariant.Ghost: return Theme.SurfaceSunken;
-                    default: return Theme.GreenSoft;
-                }
+                case ButtonVariant.Primary: return Theme.PrimaryHover;
+                case ButtonVariant.Destructive: return Theme.DangerHover;
+                case ButtonVariant.Ghost: return Theme.SurfaceSunken;
+                default: return Theme.GreenSoft;
             }
-            return fillOverride ?? VariantFill();
         }
 
         private Color CurrentBorder(Color fill)
@@ -237,11 +242,11 @@ namespace EdenPOS
             base.OnMouseMove(mevent);
         }
 
-        protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
-        protected override void OnMouseLeave(EventArgs e) { hover = false; if (!Capture) pressed = false; Invalidate(); base.OnMouseLeave(e); }
+        protected override void OnMouseEnter(EventArgs e) { hover = true; hoverFade.Set(true); Invalidate(); base.OnMouseEnter(e); }
+        protected override void OnMouseLeave(EventArgs e) { hover = false; hoverFade.Set(false); if (!Capture) pressed = false; Invalidate(); base.OnMouseLeave(e); }
         protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
         protected override void OnLostFocus(EventArgs e) { pressed = false; Invalidate(); base.OnLostFocus(e); }
-        protected override void OnEnabledChanged(EventArgs e) { hover = pressed = false; Invalidate(); base.OnEnabledChanged(e); }
+        protected override void OnEnabledChanged(EventArgs e) { hover = pressed = false; hoverFade.Reset(); Invalidate(); base.OnEnabledChanged(e); }
         protected override void OnTextChanged(EventArgs e) { Invalidate(); base.OnTextChanged(e); }
         protected override void OnKeyDown(KeyEventArgs kevent)
         {

@@ -28,6 +28,7 @@ namespace EdenPOS
             MinimumSize = new Size(760, 440);
             AutoScaleMode = AutoScaleMode.Dpi;
             BackColor = Theme.Surface;
+            WindowChrome.Integrate(this);
             Font = Theme.Body;
             ShowInTaskbar = false;
             MinimizeBox = false;

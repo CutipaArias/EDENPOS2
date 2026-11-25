@@ -338,6 +338,7 @@ namespace EdenPOS
             MinimumSize = new Size(760, 700);
             AutoScaleMode = AutoScaleMode.Dpi;
             BackColor = Theme.Canvas;
+            WindowChrome.Integrate(this);
             Font = Theme.Body;
 
             var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Padding = new Padding(Theme.Space.Xl), BackColor = Theme.Canvas };

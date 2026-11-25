@@ -198,6 +198,7 @@ namespace EdenPOS
             ShowInTaskbar = false;
             AutoScaleMode = AutoScaleMode.Dpi;
             BackColor = Theme.Surface;
+            WindowChrome.Integrate(this);
             Font = Theme.Body;
 
             var head = DialogKit.Header(product.Name, "Elija una opción para agregarla al ticket.");

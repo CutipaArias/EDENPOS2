@@ -2679,6 +2679,60 @@ namespace EdenPOS
             catch { return null; }
         }
 
+        // Carpeta de fotos reales que reemplazan los íconos del catálogo (ver Assets\Fotos\LEEME.md).
+        public static string PhotoDirectory
+        {
+            get { return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Assets", "Fotos"); }
+        }
+
+        private static readonly string[] PhotoExtensions = { ".jpg", ".jpeg", ".png", ".bmp" };   // GDI+ no lee .webp
+
+        // Imagen de un artículo, en este orden:
+        //   1. La imagen elegida a mano en Inventario → Editar artículo (data:... o ruta absoluta).
+        //   2. Assets\Fotos\<nombre del artículo>.jpg  (p. ej. "alq-toalla.jpg" para "ALQ TOALLA").
+        //   3. Assets\Fotos\<nombre del ícono>.jpg     (p. ej. "towel.jpg" sirve para todos los que usan towel.png).
+        //   4. El ícono del catálogo (Assets\Catalog).
+        // isPhoto = true cuando no es el ícono del catálogo: la tarjeta la muestra a todo el ancho.
+        public static Image LoadProductImage(Product product, out bool isPhoto)
+        {
+            isPhoto = false;
+            if (product == null) return null;
+            var file = product.ImageFile ?? "";
+            var custom = file.StartsWith("data:", StringComparison.OrdinalIgnoreCase) || Path.IsPathRooted(file);
+            if (custom)
+            {
+                var chosen = LoadImage(file);
+                if (chosen != null) { isPhoto = true; return chosen; }
+            }
+            foreach (var name in new[] { PhotoSlug(product.Name), custom ? null : Path.GetFileNameWithoutExtension(file) })
+            {
+                if (string.IsNullOrWhiteSpace(name)) continue;
+                foreach (var extension in PhotoExtensions)
+                {
+                    var path = Path.Combine(PhotoDirectory, name + extension);
+                    if (!File.Exists(path)) continue;
+                    var photo = LoadImage(path);
+                    if (photo != null) { isPhoto = true; return photo; }
+                }
+            }
+            return custom ? null : LoadImage(file);
+        }
+
+        // "ALQ TOALLA" → "alq-toalla" · "ESPONJA DE BAÑO" → "esponja-de-bano" · "PASE CORTESÍA" → "pase-cortesia".
+        public static string PhotoSlug(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return null;
+            var plain = name.Trim().ToLowerInvariant().Normalize(NormalizationForm.FormD);
+            var result = new StringBuilder();
+            foreach (var ch in plain)
+            {
+                if (CharUnicodeInfo.GetUnicodeCategory(ch) == UnicodeCategory.NonSpacingMark) continue;
+                if (char.IsLetterOrDigit(ch)) result.Append(ch);
+                else if (result.Length > 0 && result[result.Length - 1] != '-') result.Append('-');
+            }
+            return result.ToString().Trim('-');
+        }
+
         public static void OpenDataFolder()
         {
             Directory.CreateDirectory(DataDirectory);

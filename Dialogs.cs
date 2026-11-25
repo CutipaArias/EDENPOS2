@@ -24,13 +24,14 @@ namespace EdenPOS
             form.AutoScaleMode = AutoScaleMode.Dpi;
             form.BackColor = Theme.Surface;
             form.Font = Theme.Body;
+            WindowChrome.Integrate(form);
         }
 
         // Título (Title) y subtítulo opcional. Dock = Top.
         public static Panel Header(string title, string subtitle = null)
         {
             var hasSubtitle = !string.IsNullOrEmpty(subtitle);
-            var panel = new Panel { Dock = DockStyle.Top, BackColor = Theme.Surface, Padding = new Padding(Theme.Space.Xl, Theme.Space.Xl, Theme.Space.Xl, Theme.Space.Sm) };
+            var panel = new Panel { Dock = DockStyle.Top, BackColor = Theme.Surface, Padding = new Padding(Theme.Space.Xl, Theme.Space.Xl, Theme.Space.Xl, Theme.Space.Sm), Tag = WindowChrome.HeaderTag };
             panel.Height = panel.Padding.Vertical + Theme.Title.Height + (hasSubtitle ? Theme.Body.Height + Theme.Space.Xs : 0) + 4;
             if (hasSubtitle)
                 panel.Controls.Add(new Label { Text = subtitle, Dock = DockStyle.Top, Height = Theme.Body.Height + Theme.Space.Xs, Font = Theme.Body, ForeColor = Theme.Muted, AutoEllipsis = true });
@@ -986,6 +987,7 @@ namespace EdenPOS
             MinimumSize = new Size(720, 500);
             AutoScaleMode = AutoScaleMode.Dpi;
             BackColor = Theme.Surface;
+            WindowChrome.Integrate(this);
             Font = Theme.Body;
 
             // Tabla (centro)
@@ -1262,6 +1264,7 @@ namespace EdenPOS
                 AutoScaleMode = AutoScaleMode.Dpi, BackColor = Theme.Surface, Font = Theme.Body, ShowInTaskbar = false
             };
             Theme.FitDialogToWorkingArea(form);
+            WindowChrome.Integrate(form);
             return form;
         }
     }

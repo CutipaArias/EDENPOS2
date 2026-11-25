@@ -640,6 +640,7 @@ namespace EdenPOS
         public InventoryEntryDialog(string displayName, int currentStock)
         {
             Text = "Registrar entrada";
+            WindowChrome.Integrate(this);
             const int m = InventoryDialogKit.Margin;
             const int w = 424;
             InventoryDialogKit.Setup(this, w + m * 2, 372);
@@ -690,6 +691,7 @@ namespace EdenPOS
         public InventoryAdjustmentDialog(string displayName, int currentStock)
         {
             Text = "Registrar salida";
+            WindowChrome.Integrate(this);
             const int m = InventoryDialogKit.Margin;
             const int w = 424;
             InventoryDialogKit.Setup(this, w + m * 2, 452);
@@ -767,6 +769,7 @@ namespace EdenPOS
                 : existing.Id;
             existingTrackInventory = existing != null && existing.TrackInventory;
             Text = existing == null ? "Nueva variante" : "Editar variante";
+            WindowChrome.Integrate(this);
             const int m = InventoryDialogKit.Margin;
             const int w = 464;
             InventoryDialogKit.Setup(this, w + m * 2, 420);
@@ -885,6 +888,7 @@ namespace EdenPOS
         public ProductEditorDialog(Product existing, IEnumerable<string> categories)
         {
             Text = existing == null ? "Nuevo artículo" : "Editar artículo";
+            WindowChrome.Integrate(this);
             const int sideWidth = 238, m = InventoryDialogKit.Margin, w = 408;
             InventoryDialogKit.Setup(this, sideWidth + m + w + m, 638);
             existingActive = existing == null || existing.Active;

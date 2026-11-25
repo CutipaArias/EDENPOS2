@@ -483,7 +483,7 @@ namespace EdenPOS
                         string.Equals(x.Comment ?? "", dialog.SelectedComment ?? "", StringComparison.OrdinalIgnoreCase));
                     if (optionLine == null)
                     {
-                        cart.Add(new ReceiptLine
+                        optionLine = new ReceiptLine
                         {
                             ProductId = product.Id,
                             OptionId = option.Id,
@@ -491,7 +491,8 @@ namespace EdenPOS
                             Comment = dialog.SelectedComment,
                             UnitPrice = option.Price,
                             Quantity = dialog.SelectedQuantity
-                        });
+                        };
+                        cart.Add(optionLine);
                     }
                     else
                     {
@@ -500,6 +501,7 @@ namespace EdenPOS
                         if (newQuantity > 999)
                             Theme.Message(FindForm(), Tone.Warning, "La cantidad máxima por artículo es 999.", "Validación del ticket");
                     }
+                    flashLine = optionLine;
                 }
                 RenderCart();
                 return;
@@ -508,11 +510,40 @@ namespace EdenPOS
             var line = cart.FirstOrDefault(x => x.ProductId == product.Id && string.IsNullOrWhiteSpace(x.Comment));
             if (line == null)
             {
-                cart.Add(new ReceiptLine { ProductId = product.Id, Name = product.Name, UnitPrice = product.Price, Quantity = 1 });
+                line = new ReceiptLine { ProductId = product.Id, Name = product.Name, UnitPrice = product.Price, Quantity = 1 };
+                cart.Add(line);
             }
             else if (line.Quantity < 999) line.Quantity++;
             else Theme.Message(FindForm(), Tone.Warning, "La cantidad máxima por artículo es 999.", "Validación del ticket");
+            flashLine = line;
             RenderCart();
+        }
+
+        // Línea recién agregada o aumentada: se resalta en verde suave y se desvanece (Motion.Flash), y se desplaza a la
+        // vista si quedó fuera. Sin animaciones de Windows, el resaltado simplemente no aparece (el total ya cambió).
+        private ReceiptLine flashLine;
+
+        private void FlashCartLine()
+        {
+            var target = flashLine;
+            flashLine = null;
+            if (target == null) return;
+            DataGridViewRow row = null;
+            foreach (DataGridViewRow candidate in cartGrid.Rows)
+                if (ReferenceEquals(candidate.Tag, target)) { row = candidate; break; }
+            if (row == null) return;
+            try
+            {
+                if (!row.Displayed && row.Index >= 0) cartGrid.FirstDisplayedScrollingRowIndex = row.Index;
+            }
+            catch (InvalidOperationException) { }
+            if (!Theme.UseMotion) return;
+            Motion.Animate(cartGrid, "flash", Motion.Flash, t =>
+            {
+                var color = t >= 1 ? Color.Empty : Theme.Blend(Theme.GreenSoft, Theme.Surface, t);
+                row.DefaultCellStyle.BackColor = color;
+                row.DefaultCellStyle.SelectionBackColor = color;
+            });
         }
 
         private void RenderCart()
@@ -537,6 +568,7 @@ namespace EdenPOS
             UpdateBorrowedLockersSummary();   // solo usa datos en memoria; los tickets guardados se refrescan en RefreshSavedTicketsInfo
             UpdatePromotionHint();
             cartGrid.ResumeLayout();
+            FlashCartLine();
         }
 
         // Aviso visible de promoción (solo informativo: el cobro la vuelve a calcular en ChargeButton_Click y en AppData.AddReceipt).
@@ -1205,10 +1237,12 @@ namespace EdenPOS
     // (con marca ✓ si ShowCheck), de modo que se distingue sin depender solo del color.
     internal sealed class SegmentChip : Control
     {
-        private bool active, hover, pressed;
+        private bool active, pressed;
+        private readonly HoverFade hoverFade;
 
         public SegmentChip(string text)
         {
+            hoverFade = new HoverFade(this);
             SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.Selectable | ControlStyles.StandardClick, true);
             Text = text;
             Font = Theme.ButtonFont;
@@ -1236,7 +1270,7 @@ namespace EdenPOS
             g.SmoothingMode = SmoothingMode.AntiAlias;
             var rect = new Rectangle(1, 1, Width - 3, Height - 3);
             if (rect.Width <= 0 || rect.Height <= 0) return;
-            var fill = pressed ? Theme.SoftPressed : active ? Theme.GreenSoft : hover ? Theme.SurfaceSunken : Theme.Surface;
+            var fill = pressed ? Theme.SoftPressed : active ? Theme.GreenSoft : Theme.Blend(Theme.Surface, Theme.SurfaceSunken, hoverFade.Value);
             using (var path = Gfx.Round(rect, CornerRadius))
             {
                 using (var brush = new SolidBrush(fill)) g.FillPath(brush, path);
@@ -1253,8 +1287,8 @@ namespace EdenPOS
 
         protected override void OnMouseDown(MouseEventArgs e) { if (e.Button == MouseButtons.Left) { pressed = true; Invalidate(); Update(); } base.OnMouseDown(e); }
         protected override void OnMouseUp(MouseEventArgs e) { pressed = false; Invalidate(); base.OnMouseUp(e); }
-        protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
-        protected override void OnMouseLeave(EventArgs e) { hover = false; pressed = false; Invalidate(); base.OnMouseLeave(e); }
+        protected override void OnMouseEnter(EventArgs e) { hoverFade.Set(true); base.OnMouseEnter(e); }
+        protected override void OnMouseLeave(EventArgs e) { hoverFade.Set(false); pressed = false; Invalidate(); base.OnMouseLeave(e); }
         protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
         protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
         protected override bool IsInputKey(Keys keyData) { return keyData == Keys.Space || base.IsInputKey(keyData); }
@@ -1265,32 +1299,43 @@ namespace EdenPOS
         }
     }
 
-    // Tarjeta de artículo: imagen, nombre y precio. Respuesta inmediata al presionar; borde verde al pasar el cursor.
+    // Tarjeta de artículo: imagen, nombre y precio. Respuesta inmediata al presionar; al pasar el cursor el borde se funde a
+    // verde y la tarjeta se eleva con una sombra suave (Motion.Fast). Con foto real (Assets\Fotos) la imagen ocupa todo el
+    // ancho; con el ícono de catálogo se centra. Se usa también con teclado: Tab, y Enter o Espacio para agregar.
     public sealed class ProductTile : Control
     {
         private readonly Product product;
         private readonly Image image;
+        private readonly bool isPhoto;
         private readonly bool hasOptions;
-        private bool hover, pressed;
+        private readonly HoverFade hoverFade;
+        private bool pressed;
+        private const int Lift = 3;   // espacio inferior reservado para la sombra (la tarjeta no salta al elevarse)
         private static readonly Font NameFont = Theme.Font(10f, FontStyle.Bold);
         public event EventHandler<Product> ProductSelected;
 
         public ProductTile(Product item)
         {
-            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw |
+                     ControlStyles.Selectable | ControlStyles.StandardClick, true);
             product = item;
             hasOptions = ProductOptionCatalog.HasOptions(item);
-            image = AppData.LoadImage(item.ImageFile);
+            image = AppData.LoadProductImage(item, out isPhoto);
+            hoverFade = new HoverFade(this);
             Width = 164;
             Height = 190;
             Margin = new Padding(0, 0, Theme.Space.Md, Theme.Space.Md);
             Cursor = Cursors.Hand;
+            TabStop = true;
+            AccessibleRole = AccessibleRole.PushButton;
+            AccessibleName = item.Name + ", " + (hasOptions ? "desde " : "") + Theme.Money(item.Price);
+            AccessibleDescription = "Agregar al ticket";
         }
 
         public void SetResponsiveWidth(int width, float scale)
         {
             Width = Math.Max(110, width);
-            Height = (int)(Width * 0.58) + NameFont.Height * 2 + Theme.Emphasis.Height + Theme.Space.Md * 2 + Theme.Space.Xs;
+            Height = (int)(Width * 0.58) + NameFont.Height * 2 + Theme.Emphasis.Height + Theme.Space.Md * 2 + Theme.Space.Xs + Lift;
         }
 
         protected override void Dispose(bool disposing)
@@ -1305,34 +1350,72 @@ namespace EdenPOS
         {
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+            var lift = pressed ? 0.0 : hoverFade.Value;   // presionar "asienta" la tarjeta al instante
+            var rect = new Rectangle(0, 0, Width - 1, Height - 1 - Lift);
+            if (rect.Width <= 0 || rect.Height <= 0) return;
+
+            // Sombra de elevación: aparece con el hover, debajo de la tarjeta (dentro de sus límites).
+            if (lift > 0)
+                using (var shadow = Gfx.Round(new Rectangle(1, Lift, Width - 3, Height - 1 - Lift), Theme.Radius.Card))
+                using (var brush = new SolidBrush(Color.FromArgb((int)(34 * lift), 20, 40, 30))) g.FillPath(brush, shadow);
+
             var fill = pressed ? Theme.GreenSoft : Theme.Surface;
+            var border = pressed ? Theme.Primary : Theme.Blend(Theme.Border, Theme.Primary, lift);
+            var pad = Theme.Space.Md;
+            var imageHeight = (int)(Width * 0.58);
             using (var path = Gfx.Round(rect, Theme.Radius.Card))
             {
                 using (var brush = new SolidBrush(fill)) g.FillPath(brush, path);
-                using (var pen = new Pen(hover || pressed ? Theme.Primary : Theme.Border, hover || pressed ? 2f : 1f)) g.DrawPath(pen, path);
+                if (image != null && image.Width > 0 && image.Height > 0)
+                {
+                    g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    if (isPhoto)
+                    {
+                        // Foto real: llena el ancho (recorte centrado), con las esquinas superiores de la tarjeta.
+                        var box = new Rectangle(0, 0, Width, imageHeight);
+                        var ratio = Math.Max(box.Width / (float)image.Width, box.Height / (float)image.Height);
+                        var w = image.Width * ratio; var h = image.Height * ratio;
+                        var state = g.Save();
+                        g.SetClip(path);
+                        g.IntersectClip(box);
+                        g.DrawImage(image, box.X + (box.Width - w) / 2f, box.Y + (box.Height - h) / 2f, w, h);
+                        g.Restore(state);
+                    }
+                    else
+                    {
+                        var box = new Rectangle(pad, pad, Width - pad * 2, imageHeight - pad);
+                        var ratio = Math.Min(box.Width / (float)image.Width, box.Height / (float)image.Height);
+                        var w = (int)(image.Width * ratio); var h = (int)(image.Height * ratio);
+                        g.DrawImage(image, box.X + (box.Width - w) / 2, box.Y + (box.Height - h) / 2, w, h);
+                    }
+                }
+                using (var pen = new Pen(border, pressed || lift > 0.5 ? 2f : 1f)) g.DrawPath(pen, path);
             }
-            var pad = Theme.Space.Md;
-            var imageHeight = (int)(Width * 0.58);
-            if (image != null && image.Width > 0 && image.Height > 0)
-            {
-                var box = new Rectangle(pad, pad, Width - pad * 2, imageHeight - pad);
-                var ratio = Math.Min(box.Width / (float)image.Width, box.Height / (float)image.Height);
-                var w = (int)(image.Width * ratio); var h = (int)(image.Height * ratio);
-                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                g.DrawImage(image, box.X + (box.Width - w) / 2, box.Y + (box.Height - h) / 2, w, h);
-            }
+
+            // Foco de teclado: anillo punteado dentro del borde (no depende solo del color del borde).
+            if (Focused && ShowFocusCues)
+                using (var ring = Gfx.Round(new Rectangle(4, 4, Width - 9, Height - 9 - Lift), Theme.Radius.Card - 3))
+                using (var pen = new Pen(Theme.Primary, 1.5f) { DashStyle = DashStyle.Dot }) g.DrawPath(pen, ring);
+
             var flags = TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding;
             TextRenderer.DrawText(g, product.Name, NameFont, new Rectangle(pad, imageHeight + Theme.Space.Xs, Width - pad * 2, NameFont.Height * 2), Theme.Ink, flags);
             var price = (hasOptions ? "Desde " : "") + Theme.Money(product.Price);
-            TextRenderer.DrawText(g, price, Theme.Emphasis, new Rectangle(pad, Height - pad - Theme.Emphasis.Height, Width - pad * 2, Theme.Emphasis.Height), Theme.Primary,
+            TextRenderer.DrawText(g, price, Theme.Emphasis, new Rectangle(pad, rect.Bottom - pad - Theme.Emphasis.Height, Width - pad * 2, Theme.Emphasis.Height), Theme.Primary,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);
         }
 
         protected override void OnMouseDown(MouseEventArgs e) { if (e.Button == MouseButtons.Left) { pressed = true; Invalidate(); Update(); } base.OnMouseDown(e); }
         protected override void OnMouseUp(MouseEventArgs e) { pressed = false; Invalidate(); base.OnMouseUp(e); }
-        protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
-        protected override void OnMouseLeave(EventArgs e) { hover = false; pressed = false; Invalidate(); base.OnMouseLeave(e); }
+        protected override void OnMouseEnter(EventArgs e) { hoverFade.Set(true); base.OnMouseEnter(e); }
+        protected override void OnMouseLeave(EventArgs e) { hoverFade.Set(false); pressed = false; Invalidate(); base.OnMouseLeave(e); }
+        protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
+        protected override void OnLostFocus(EventArgs e) { pressed = false; Invalidate(); base.OnLostFocus(e); }
+        protected override bool IsInputKey(Keys keyData) { return keyData == Keys.Space || keyData == Keys.Enter || base.IsInputKey(keyData); }
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Space || e.KeyCode == Keys.Enter) { e.Handled = true; e.SuppressKeyPress = true; OnClick(EventArgs.Empty); }
+            base.OnKeyDown(e);
+        }
 
         protected override void OnClick(EventArgs e)
         {

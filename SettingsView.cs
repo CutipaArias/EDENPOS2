@@ -1430,6 +1430,7 @@ namespace EdenPOS
                 ClientSize = new Size(width, 250)
             })
             {
+                WindowChrome.Integrate(dialog);
                 var message = new Label { Text = text, Font = Theme.Body, ForeColor = Theme.Ink, AutoSize = false, Bounds = new Rectangle(pad, pad, inner, 72) };
                 var label = Theme.LabelField("Escriba " + word + " para confirmar");
                 label.Location = new Point(pad, 108);

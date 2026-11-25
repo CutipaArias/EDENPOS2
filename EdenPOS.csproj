@@ -41,5 +41,10 @@
     <Content Include="Assets\Catalog\*.png">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <!-- Fotos reales opcionales que reemplazan los íconos (ver Assets\Fotos\LEEME.md). -->
+    <None Remove="Assets\Fotos\**" />
+    <Content Include="Assets\Fotos\*.jpg;Assets\Fotos\*.jpeg;Assets\Fotos\*.png;Assets\Fotos\*.bmp">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 </Project>

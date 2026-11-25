@@ -13,7 +13,16 @@ namespace EdenPOS
         private readonly ComboBox userBox;
         private readonly TextBox pinBox;
         private readonly Banner status;
+        private readonly CardPanel card;
+        private int? cardRestLeft;
         private readonly Button loginButton;
+
+        // Barra de título del color del lienzo, sin título ni ícono dibujados (ver WindowChrome).
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            WindowChrome.Blend(this, Theme.Canvas);
+        }
 
         public LoginForm()
         {
@@ -31,7 +40,7 @@ namespace EdenPOS
 
             // Una sola tarjeta elevada sobre el lienzo: sin franja verde; la marca la pone el logo.
             const int cardWidth = 480, contentWidth = 384, contentLeft = 48;
-            var card = new CardPanel
+            card = new CardPanel
             {
                 Location = new Point((DesignWidth - cardWidth) / 2, Theme.Space.Lg),
                 Size = new Size(cardWidth, DesignHeight - Theme.Space.Lg * 2),
@@ -321,12 +330,26 @@ namespace EdenPOS
                 else if (result.AttemptsLeft > 0 && result.AttemptsLeft < UserSecurity.MaxFailedAttempts && result.User != null && result.User.FailedAttempts >= 2)
                     SetStatus("PIN incorrecto. Le " + (result.AttemptsLeft == 1 ? "queda 1 intento" : "quedan " + result.AttemptsLeft + " intentos") + " antes de que se bloquee la cuenta.");
                 else SetStatus("PIN incorrecto. Inténtelo de nuevo.");
+                if (result.Outcome == AppData.LoginOutcome.WrongPin) ShakeCard();
                 return;
             }
 
             AppSession.SignIn(result.User);
             DialogResult = DialogResult.OK;
             Close();
+        }
+
+        // PIN incorrecto: la tarjeta "niega con la cabeza" (oscilación amortiguada de 10 px, 360 ms), como la ventana de inicio
+        // de sesión de Mac. El mensaje del banner sigue siendo la explicación; sin animaciones de Windows no se mueve.
+        private void ShakeCard()
+        {
+            if (!cardRestLeft.HasValue) cardRestLeft = card.Left;
+            var rest = cardRestLeft.Value;
+            var amplitude = Math.Max(6, (int)Math.Round(10 * card.Width / 480f));
+            Motion.Animate(card, "shake", 360, t =>
+            {
+                card.Left = t >= 1 ? rest : rest + (int)Math.Round(amplitude * (1 - t) * Math.Sin(t * Math.PI * 6));
+            }, () => { card.Left = rest; cardRestLeft = null; });
         }
 
         // Al elegir un usuario cuya cuenta ya figura bloqueada, se avisa de inmediato (la comprobación definitiva la hace TryLogin).
@@ -366,6 +389,12 @@ namespace EdenPOS
                 var assemblyDirectory = string.IsNullOrEmpty(location) ? null : Path.GetDirectoryName(location);
                 if (string.IsNullOrEmpty(assemblyDirectory)) assemblyDirectory = AppDomain.CurrentDomain.BaseDirectory;
                 path = Path.Combine(assemblyDirectory, "Assets", "EdenPOS-Login-v2.png");
+                // Logo propio del local (Assets\Fotos\logo.png o .jpg) en lugar del logo genérico.
+                foreach (var extension in new[] { ".png", ".jpg", ".jpeg" })
+                {
+                    var own = Path.Combine(assemblyDirectory, "Assets", "Fotos", "logo" + extension);
+                    if (File.Exists(own)) { path = own; break; }
+                }
             }
             catch
             {

@@ -150,3 +150,9 @@ La visita queda registrada en 2 pantallas. Al salir, el cobro usa Ventas → Tic
 ## Recursos gráficos
 
 Iconos de catálogo de Twemoji bajo CC BY 4.0: ver `THIRD_PARTY_NOTICES.txt` y `Assets\Catalog\SOURCES.md`.
+
+Fotos reales: ponga fotos en `Assets\Fotos` (por ejemplo `alq-toalla.jpg` o `towel.jpg`) y el logo del local como `Assets\Fotos\logo.png`; reemplazan los íconos y el logo genérico. Los nombres de archivo y las recomendaciones están en `Assets\Fotos\LEEME.md`.
+
+## Movimiento
+
+Las animaciones son breves y opcionales (`Motion.cs`): fundido de hover en botones, chips, tarjetas y barra lateral; el indicador de la barra lateral crece al cambiar de pantalla; la línea del carrito que se agrega o aumenta se resalta y se desvanece; y la tarjeta de inicio de sesión oscila con un PIN incorrecto. Si Windows tiene desactivadas las animaciones (Configuración → Accesibilidad → Efectos visuales), no se anima nada.

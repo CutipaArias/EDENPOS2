@@ -37,6 +37,13 @@ namespace EdenPOS
             Close();
         }
 
+        // Barra de título verde oscuro (el color de la barra lateral), sin título ni ícono dibujados (ver WindowChrome).
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            WindowChrome.Blend(this, Theme.SidebarBack);
+        }
+
         public MainForm()
         {
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
@@ -471,12 +478,15 @@ namespace EdenPOS
         private sealed class NavButton : Button
         {
             private readonly string glyph, label, hint;
-            private bool hover, pressed, active;
+            private bool pressed, active;
+            private double indicator;   // 0..1: alto del indicador verde (crece desde el centro al activarse)
+            private readonly HoverFade hoverFade;
             private static readonly Font IconFont = CreateIconFont();
 
             public NavButton(string glyph, string label, string hint)
             {
                 this.glyph = glyph; this.label = label; this.hint = hint;
+                hoverFade = new HoverFade(this);
                 SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
                 FlatStyle = FlatStyle.Flat;
                 FlatAppearance.BorderSize = 0;
@@ -489,7 +499,18 @@ namespace EdenPOS
                 AccessibleName = label;
             }
 
-            public bool Active { get { return active; } set { active = value; Invalidate(); } }
+            public bool Active
+            {
+                get { return active; }
+                set
+                {
+                    if (active == value) return;
+                    active = value;
+                    if (active) Motion.Animate(this, "indicator", Motion.Normal, t => { indicator = t; Invalidate(); });
+                    else { Motion.Cancel(this, "indicator"); indicator = 0; }
+                    Invalidate();
+                }
+            }
 
             private static Font CreateIconFont()
             {
@@ -513,14 +534,15 @@ namespace EdenPOS
                 g.Clear(Theme.SidebarBack);
                 g.SmoothingMode = SmoothingMode.AntiAlias;
                 var rect = new Rectangle(0, 0, Width - 1, Height - 1);
-                var fill = pressed ? Theme.SidebarActive : active ? Theme.SidebarActive : hover ? Theme.SidebarHover : Theme.SidebarBack;
+                var fill = active ? Theme.SidebarActive : Theme.Blend(Theme.SidebarBack, Theme.SidebarHover, hoverFade.Value);
                 if (pressed && !active) fill = Theme.Blend(Theme.SidebarHover, Theme.SidebarActive, 0.6);
                 if (fill != Theme.SidebarBack)
                     using (var path = Gfx.Round(rect, Theme.Radius.Control + 2))
                     using (var brush = new SolidBrush(fill)) g.FillPath(brush, path);
 
-                if (active)
-                    using (var path = Gfx.Round(new Rectangle(0, (Height - 22) / 2, 4, 22), 2))
+                var barHeight = (int)Math.Round(22 * indicator);
+                if (active && barHeight >= 2)
+                    using (var path = Gfx.Round(new Rectangle(0, (Height - barHeight) / 2, 4, barHeight), 2))
                     using (var brush = new SolidBrush(Theme.Green)) g.FillPath(brush, path);
 
                 var textColor = active ? Color.White : Theme.SidebarText;
@@ -548,8 +570,8 @@ namespace EdenPOS
                 base.OnMouseDown(mevent);
             }
             protected override void OnMouseUp(MouseEventArgs mevent) { pressed = false; Invalidate(); base.OnMouseUp(mevent); }
-            protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
-            protected override void OnMouseLeave(EventArgs e) { hover = false; if (!Capture) pressed = false; Invalidate(); base.OnMouseLeave(e); }
+            protected override void OnMouseEnter(EventArgs e) { hoverFade.Set(true); Invalidate(); base.OnMouseEnter(e); }
+            protected override void OnMouseLeave(EventArgs e) { hoverFade.Set(false); if (!Capture) pressed = false; Invalidate(); base.OnMouseLeave(e); }
             protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
             protected override void OnLostFocus(EventArgs e) { pressed = false; Invalidate(); base.OnLostFocus(e); }
         }

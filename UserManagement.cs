@@ -293,6 +293,7 @@ namespace EdenPOS
             ShowInTaskbar = false;
             AutoScaleMode = AutoScaleMode.Dpi;
             BackColor = Theme.Surface;
+            WindowChrome.Integrate(this);
             Font = Theme.Body;
 
             const int contentWidth = 432;
